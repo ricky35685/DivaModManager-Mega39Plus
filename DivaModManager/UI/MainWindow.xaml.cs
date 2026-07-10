@@ -37,6 +37,7 @@ namespace DivaModManager
         public string version;
         private FileSystemWatcher ModsWatcher;
         private FlowDocument defaultFlow = new FlowDocument();
+        private static readonly Uri DefaultPreviewUri = new Uri("pack://application:,,,/DivaModManager;component/Assets/preview.png");
         private string defaultText = "Welcome to Diva Mod Manager!\n\n" +
             "To show metadata here:\nRight Click Row > Configure Mod and add author, version, and/or date fields" +
             "\nand/or Right Click Row > Fetch Metadata and confirm the GameBanana URL of the mod";
@@ -141,9 +142,7 @@ namespace DivaModManager
 
             defaultFlow.Blocks.Add(ConvertToFlowParagraph(defaultText));
             DescriptionWindow.Document = defaultFlow;
-            var bitmap = new BitmapImage(new Uri("pack://application:,,,/DivaModManager;component/Assets/preview.png"));
-            ImageBehavior.SetAnimatedSource(Preview, bitmap);
-            ImageBehavior.SetAnimatedSource(PreviewBG, null);
+            SetDefaultPreview();
 
             GameBox.IsEnabled = false;
             ModGrid.IsEnabled = false;
@@ -1093,6 +1092,59 @@ namespace DivaModManager
             return paragraph;
         }
 
+        private static BitmapImage CreatePreviewImage(byte[] imageBytes)
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.StreamSource = new MemoryStream(imageBytes, writable: false);
+            image.EndInit();
+            return image;
+        }
+
+        private static BitmapImage CreatePreviewImage(Uri uri)
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.UriSource = uri;
+            image.EndInit();
+            return image;
+        }
+
+        private void SetPreviewImages(Func<BitmapImage> imageFactory, bool showBackground = true)
+        {
+            // AnimatedSource instances cannot be shared safely across WPF inheritance contexts.
+            var previewImage = imageFactory();
+            var backgroundImage = showBackground ? imageFactory() : null;
+
+            ImageBehavior.SetAnimatedSource(Preview, previewImage);
+            ImageBehavior.SetAnimatedSource(PreviewBG, backgroundImage);
+        }
+
+        private void SetDefaultPreview()
+        {
+            SetPreviewImages(() => new BitmapImage(DefaultPreviewUri), false);
+        }
+
+        private static bool TryGetAbsolutePreviewUri(Uri previewUri, out Uri absoluteUri)
+        {
+            absoluteUri = null;
+            if (previewUri == null)
+                return false;
+            if (previewUri.IsAbsoluteUri)
+            {
+                absoluteUri = previewUri;
+                return true;
+            }
+
+            var value = previewUri.OriginalString.Trim();
+            if (String.IsNullOrWhiteSpace(value))
+                return false;
+
+            var candidate = value.StartsWith("//") ? $"https:{value}" : $"https://{value.TrimStart('/')}";
+            return Uri.TryCreate(candidate, UriKind.Absolute, out absoluteUri);
+        }
+
         private void ShowMetadata(string mod)
         {
             FlowDocument descFlow = new FlowDocument();
@@ -1205,64 +1257,51 @@ namespace DivaModManager
                     try
                     {
                         byte[] imageBytes = File.ReadAllBytes(previewFiles[0].FullName);
-                        var stream = new MemoryStream(imageBytes);
-                        var img = new BitmapImage();
-
-                        img.BeginInit();
-                        img.StreamSource = stream;
-                        img.CacheOption = BitmapCacheOption.OnLoad;
-                        img.EndInit();
-                        ImageBehavior.SetAnimatedSource(Preview, img);
-                        ImageBehavior.SetAnimatedSource(PreviewBG, img);
+                        SetPreviewImages(() => CreatePreviewImage(imageBytes));
                     }
                     catch (Exception ex)
                     {
                         Global.logger.WriteLine(ex.Message, LoggerType.Error);
+                        SetDefaultPreview();
                     }
                 }
                 else if (metadata != null && metadata.preview != null)
                 {
-                    var bitmap = new BitmapImage();
-                    bitmap.BeginInit();
-                    bitmap.UriSource = metadata.preview;
-                    bitmap.EndInit();
-                    ImageBehavior.SetAnimatedSource(Preview, bitmap);
-                    ImageBehavior.SetAnimatedSource(PreviewBG, bitmap);
+                    try
+                    {
+                        if (TryGetAbsolutePreviewUri(metadata.preview, out var previewUri))
+                            SetPreviewImages(() => CreatePreviewImage(previewUri));
+                        else
+                        {
+                            Global.logger.WriteLine($"Invalid preview URI for {mod}: {metadata.preview}", LoggerType.Warning);
+                            SetDefaultPreview();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Global.logger.WriteLine(ex.Message, LoggerType.Error);
+                        SetDefaultPreview();
+                    }
                 }
                 else
-                {
-                    var bitmap = new BitmapImage(new Uri("pack://application:,,,/DivaModManager;component/Assets/preview.png"));
-                    ImageBehavior.SetAnimatedSource(Preview, bitmap);
-                    ImageBehavior.SetAnimatedSource(PreviewBG, null);
-                }
+                    SetDefaultPreview();
             }
             else if (previewFiles.Length > 0)
             {
                 try
                 {
                     byte[] imageBytes = File.ReadAllBytes(previewFiles[0].FullName);
-                    var stream = new MemoryStream(imageBytes);
-                    var img = new BitmapImage();
-
-                    img.BeginInit();
-                    img.StreamSource = stream;
-                    img.CacheOption = BitmapCacheOption.OnLoad;
-                    img.EndInit();
-                    ImageBehavior.SetAnimatedSource(Preview, img);
-                    ImageBehavior.SetAnimatedSource(PreviewBG, img);
+                    SetPreviewImages(() => CreatePreviewImage(imageBytes));
                 }
                 catch (Exception ex)
                 {
                     Global.logger.WriteLine(ex.Message, LoggerType.Error);
+                    SetDefaultPreview();
                 }
             }
             // Set preview if no mod.json or preview exists
             else
-            {
-                var bitmap = new BitmapImage(new Uri("pack://application:,,,/DivaModManager;component/Assets/preview.png"));
-                ImageBehavior.SetAnimatedSource(Preview, bitmap);
-                ImageBehavior.SetAnimatedSource(PreviewBG, null);
-            }
+                SetDefaultPreview();
             // Default preview if no config.toml or mod.json
             if (descFlow.Blocks.Count == 0)
                 DescriptionWindow.Document = defaultFlow;
@@ -2344,9 +2383,7 @@ namespace DivaModManager
                 LauncherOptionsBox.SelectedIndex = Global.config.Configs[Global.config.CurrentGame].LauncherOptionIndex;
 
                 DescriptionWindow.Document = defaultFlow;
-                var bitmap = new BitmapImage(new Uri("pack://application:,,,/DivaModManager;component/Assets/preview.png"));
-                ImageBehavior.SetAnimatedSource(Preview, bitmap);
-                ImageBehavior.SetAnimatedSource(PreviewBG, null);
+                SetDefaultPreview();
 
                 GameBox.IsEnabled = false;
                 ModGrid.IsEnabled = false;
