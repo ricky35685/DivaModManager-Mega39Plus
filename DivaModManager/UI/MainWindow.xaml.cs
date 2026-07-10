@@ -38,6 +38,8 @@ namespace DivaModManager
         private FileSystemWatcher ModsWatcher;
         private FlowDocument defaultFlow = new FlowDocument();
         private static readonly Uri DefaultPreviewUri = new Uri("pack://application:,,,/DivaModManager;component/Assets/preview.png");
+        private int metadataRequestVersion;
+        private CancellationTokenSource metadataCancellationSource;
         private string defaultText = "Welcome to Diva Mod Manager!\n\n" +
             "To show metadata here:\nRight Click Row > Configure Mod and add author, version, and/or date fields" +
             "\nand/or Right Click Row > Fetch Metadata and confirm the GameBanana URL of the mod";
@@ -1145,43 +1147,136 @@ namespace DivaModManager
             return Uri.TryCreate(candidate, UriKind.Absolute, out absoluteUri);
         }
 
-        private void ShowMetadata(string mod)
+        private async void ShowMetadata(string mod)
         {
-            FlowDocument descFlow = new FlowDocument();
+            var requestVersion = Interlocked.Increment(ref metadataRequestVersion);
+            var cancellationSource = new CancellationTokenSource();
+            Interlocked.Exchange(ref metadataCancellationSource, cancellationSource)?.Cancel();
+            try
+            {
+                await ShowMetadataAsync(mod, requestVersion, cancellationSource.Token);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception exception)
+            {
+                if (requestVersion != Volatile.Read(ref metadataRequestVersion))
+                    return;
+
+                Action showFallback = () =>
+                {
+                    if (requestVersion != Volatile.Read(ref metadataRequestVersion))
+                        return;
+                    Global.logger.WriteLine($"Couldn't show metadata for {mod} ({exception.Message})", LoggerType.Warning);
+                    SetDefaultPreview();
+                    DescriptionWindow.Document = defaultFlow;
+                };
+                if (DescriptionWindow.Dispatcher.CheckAccess())
+                    showFallback();
+                else
+                    await DescriptionWindow.Dispatcher.InvokeAsync(showFallback);
+            }
+            finally
+            {
+                Interlocked.CompareExchange(ref metadataCancellationSource, null, cancellationSource);
+                cancellationSource.Dispose();
+            }
+        }
+
+        private async Task ShowMetadataAsync(
+            string mod,
+            int requestVersion,
+            CancellationToken cancellationToken)
+        {
+            if (String.IsNullOrWhiteSpace(mod))
+            {
+                SetDefaultPreview();
+                DescriptionWindow.Document = defaultFlow;
+                return;
+            }
+
             // Set image
             string path = $@"{Global.config.Configs[Global.config.CurrentGame].ModsFolder}{Global.s}{mod}";
+            if (!Directory.Exists(path))
+            {
+                SetDefaultPreview();
+                DescriptionWindow.Document = defaultFlow;
+                return;
+            }
+
+            var classification = await Task.Run(
+                () => ModClassifier.Classify(path, cancellationToken),
+                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (DescriptionWindow.Dispatcher.CheckAccess())
+                ApplyMetadata(mod, path, classification, requestVersion, cancellationToken);
+            else
+                await DescriptionWindow.Dispatcher.InvokeAsync(
+                    () => ApplyMetadata(mod, path, classification, requestVersion, cancellationToken));
+        }
+
+        private void ApplyMetadata(
+            string mod,
+            string path,
+            ModClassification classification,
+            int requestVersion,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (requestVersion != Volatile.Read(ref metadataRequestVersion))
+                return;
+            FlowDocument descFlow = new FlowDocument();
+            if (!Directory.Exists(path))
+            {
+                SetDefaultPreview();
+                DescriptionWindow.Document = defaultFlow;
+                return;
+            }
+
             FileInfo[] previewFiles = new DirectoryInfo(path).GetFiles("Preview.*");
-            // Add info from mod.json and config.toml
-            if (File.Exists($"{Global.config.Configs[Global.config.CurrentGame].ModsFolder}{Global.s}{mod}{Global.s}mod.json")
-                || File.Exists($"{Global.config.Configs[Global.config.CurrentGame].ModsFolder}{Global.s}{mod}{Global.s}config.toml"))
+            var metadataPath = Path.Combine(path, "mod.json");
+            var configPath = Path.Combine(path, "config.toml");
+            // Add reported metadata and the independent local classification.
+            if (Directory.Exists(path))
             {
                 Metadata metadata = null;
-                if (File.Exists($"{Global.config.Configs[Global.config.CurrentGame].ModsFolder}{Global.s}{mod}{Global.s}mod.json"))
+                if (File.Exists(metadataPath))
                 {
-                    var metadataString = File.ReadAllText($"{Global.config.Configs[Global.config.CurrentGame].ModsFolder}{Global.s}{mod}{Global.s}mod.json");
-                    metadata = JsonSerializer.Deserialize<Metadata>(metadataString);
+                    try
+                    {
+                        var metadataString = File.ReadAllText(metadataPath);
+                        metadata = JsonSerializer.Deserialize<Metadata>(metadataString);
+                    }
+                    catch (Exception exception) when (exception is IOException || exception is JsonException || exception is NotSupportedException)
+                    {
+                        Global.logger.WriteLine($"Couldn't read mod.json for {mod} ({exception.Message})", LoggerType.Warning);
+                    }
                 }
 
                 TomlTable config = null;
-                if (File.Exists($"{Global.config.Configs[Global.config.CurrentGame].ModsFolder}{Global.s}{mod}{Global.s}config.toml"))
+                if (File.Exists(configPath))
                 {
-                    var configPath = $"{Global.config.Configs[Global.config.CurrentGame].ModsFolder}{Global.s}{mod}{Global.s}config.toml";
-                    var configString = File.ReadAllText(configPath);
-                    if (!Toml.TryToModel(configString, out config, out var diagnostics))
+                    try
                     {
-                        Global.logger.WriteLine($"{diagnostics[0].Message} for {mod}. Rewriting {configPath} with only the enabled & include fields", LoggerType.Warning);
-                        config = new();
-                        var enabled = Global.ModList.ToList().Find(x => x.name == mod).enabled;
-                        config.Add("enabled", enabled);
-                        AddInclude(config);
-                        File.WriteAllText(configPath, Toml.FromModel(config));
+                        var configString = File.ReadAllText(configPath);
+                        if (!Toml.TryToModel(configString, out config, out var diagnostics))
+                        {
+                            var message = diagnostics.Count > 0 ? diagnostics[0].Message : "Unknown TOML error";
+                            Global.logger.WriteLine($"Couldn't parse {configPath} ({message})", LoggerType.Warning);
+                            config = null;
+                        }
+                    }
+                    catch (Exception exception) when (exception is IOException || exception is UnauthorizedAccessException)
+                    {
+                        Global.logger.WriteLine($"Couldn't read {configPath} ({exception.Message})", LoggerType.Warning);
                     }
                 }
 
                 var para = new Paragraph();
                 var text = String.Empty;
-                if (config != null && config.ContainsKey("author") && (config["author"] as string).Length > 0)
-                    text += $"Author: {config["author"]}\n";
+                if (TryGetTomlString(config, "author", out var author))
+                    text += $"Author: {author}\n";
                 else if (metadata != null)
                 {
                     if (metadata.submitter != null)
@@ -1209,14 +1304,14 @@ namespace DivaModManager
                         descFlow.Blocks.Add(para);
                     }
                 }
-                if (config != null && config.ContainsKey("version") && (config["version"] as string).Length > 0)
+                if (TryGetTomlString(config, "version", out var versionValue))
                 {
-                    text += $"Version: {config["version"]}";
-                    if (config.ContainsKey("date") && config["date"].ToString().Length > 0)
+                    text += $"Version: {versionValue}";
+                    if (TryGetTomlValue(config, "date", out _))
                         text += "\n";
                 }
-                if (config != null && config.ContainsKey("date") && config["date"].ToString().Length > 0)
-                    text += $"Date: {config["date"]}";
+                if (TryGetTomlValue(config, "date", out var dateValue))
+                    text += $"Date: {dateValue}";
                 if (metadata != null && !String.IsNullOrEmpty(metadata.cat))
                 {
                     if (!String.IsNullOrWhiteSpace(text))
@@ -1226,7 +1321,7 @@ namespace DivaModManager
                     }
                     text = String.Empty;
                     para = new Paragraph();
-                    para.Inlines.Add("Category: ");
+                    para.Inlines.Add("Reported category: ");
                     if (metadata.caticon != null && metadata.caticon.ToString().Length > 0)
                     {
                         BitmapImage bm = new BitmapImage(metadata.caticon);
@@ -1241,8 +1336,42 @@ namespace DivaModManager
                 else if (!String.IsNullOrWhiteSpace(text))
                     text += "\n";
 
-                if (config != null && config.ContainsKey("description") && (config["description"] as string).Length > 0)
-                    text += $"Description: {config["description"]}\n";
+                if (!String.IsNullOrWhiteSpace(text))
+                {
+                    var init = ConvertToFlowParagraph(text);
+                    descFlow.Blocks.Add(init);
+                    text = String.Empty;
+                }
+
+                para = new Paragraph();
+                para.Inlines.Add("Detected category: ");
+                para.Inlines.Add(classification.IsUnknown
+                    ? "Unknown"
+                    : classification.PrimaryCategory);
+                if (classification.DetectedCategories.Count > 1)
+                {
+                    para.Inlines.Add(new LineBreak());
+                    para.Inlines.Add($"Additional categories: {String.Join(", ", classification.DetectedCategories.Skip(1))}");
+                }
+                if (!String.IsNullOrWhiteSpace(classification.FormatVariant))
+                {
+                    para.Inlines.Add(new LineBreak());
+                    para.Inlines.Add($"Format: {classification.FormatVariant}");
+                }
+                if (!classification.IsUnknown)
+                {
+                    para.Inlines.Add(new LineBreak());
+                    para.Inlines.Add($"Confidence: {classification.Confidence}");
+                }
+                if (classification.Evidence.Count > 0)
+                {
+                    para.Inlines.Add(new LineBreak());
+                    para.Inlines.Add($"Evidence: {String.Join("; ", classification.Evidence)}");
+                }
+                descFlow.Blocks.Add(para);
+
+                if (TryGetTomlString(config, "description", out var description))
+                    text += $"Description: {description}\n";
                 else if (metadata != null && metadata.description != null && metadata.description.Length > 0)
                     text += $"Description: {metadata.description}\n";
                 if (metadata != null && metadata.homepage != null && metadata.homepage.ToString().Length > 0)
@@ -1312,11 +1441,34 @@ namespace DivaModManager
                 descriptionText.ApplyPropertyValue(Inline.BaselineAlignmentProperty, BaselineAlignment.Center);
             }
         }
+
+        private static bool TryGetTomlString(TomlTable config, string key, out string value)
+        {
+            value = null;
+            if (config == null || !config.TryGetValue(key, out var rawValue) || rawValue is not string text ||
+                String.IsNullOrWhiteSpace(text))
+                return false;
+
+            value = text;
+            return true;
+        }
+
+        private static bool TryGetTomlValue(TomlTable config, string key, out string value)
+        {
+            value = null;
+            if (config == null || !config.TryGetValue(key, out var rawValue) || rawValue == null)
+                return false;
+
+            value = rawValue.ToString();
+            return !String.IsNullOrWhiteSpace(value);
+        }
         private void ModGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             Mod row = (Mod)ModGrid.SelectedItem;
             if (row != null)
                 ShowMetadata(row.name);
+            else
+                ShowMetadata(null);
         }
 
         private void Download_Click(object sender, RoutedEventArgs e)
@@ -2349,6 +2501,7 @@ namespace DivaModManager
                 else
                     DiscordButton.Visibility = Visibility.Visible;
                 Global.config.CurrentGame = (((GameBox.SelectedValue as ComboBoxItem).Content as StackPanel).Children[1] as TextBlock).Text.Trim().Replace(":", String.Empty);
+                ShowMetadata(null);
                 if (!Global.config.Configs.ContainsKey(Global.config.CurrentGame))
                 {
                     Global.ModList = new();
@@ -2381,9 +2534,6 @@ namespace DivaModManager
                 LauncherOptionsBox.IsEnabled = true;
                 LauncherOptionsBox.ItemsSource = LauncherOptions;
                 LauncherOptionsBox.SelectedIndex = Global.config.Configs[Global.config.CurrentGame].LauncherOptionIndex;
-
-                DescriptionWindow.Document = defaultFlow;
-                SetDefaultPreview();
 
                 GameBox.IsEnabled = false;
                 ModGrid.IsEnabled = false;
