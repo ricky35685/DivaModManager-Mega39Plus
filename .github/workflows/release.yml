@@ -57,6 +57,20 @@ jobs:
             throw "Tag ${{ steps.release.outputs.tag }} does not target the checked-out commit."
           }
 
+      # Pin the audit/build SDK even when a manual rerun targets an older tag.
+      - name: Select .NET 9 SDK
+        shell: pwsh
+        run: |
+          $sdkConfig = [ordered]@{
+            sdk = [ordered]@{
+              version = '9.0.100'
+              rollForward = 'latestFeature'
+              allowPrerelease = $false
+            }
+          }
+          $sdkConfig | ConvertTo-Json -Depth 3 |
+            Set-Content -LiteralPath global.json -Encoding utf8NoBOM
+
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:

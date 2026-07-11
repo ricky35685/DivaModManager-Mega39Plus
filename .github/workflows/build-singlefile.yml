@@ -21,6 +21,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Select .NET 9 SDK
+        shell: pwsh
+        run: |
+          $sdkConfig = [ordered]@{
+            sdk = [ordered]@{
+              version = '9.0.100'
+              rollForward = 'latestFeature'
+              allowPrerelease = $false
+            }
+          }
+          $sdkConfig | ConvertTo-Json -Depth 3 |
+            Set-Content -LiteralPath global.json -Encoding utf8NoBOM
+
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
