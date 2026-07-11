@@ -11,8 +11,8 @@ namespace DivaModManager
 {
     public class ZipExtractor : IPackageExtractor
     {
-        public async Task ExtractPackageAsync(string sourceFilePath, string destDirPath,
-            IProgress<double>? progress = null, CancellationToken cancellationToken = default)
+        public Task ExtractPackageAsync(string sourceFilePath, string destDirPath,
+            IProgress<double> progress = null, CancellationToken cancellationToken = default)
         {
             try
             {
@@ -26,7 +26,7 @@ namespace DivaModManager
                 else
                 {
                     using (Stream stream = File.OpenRead(sourceFilePath))
-                    using (var reader = ReaderFactory.Open(stream))
+                    using (var reader = ReaderFactory.OpenReader(stream, ReaderOptions.ForExternalStream))
                     {
                         while (reader.MoveToNextEntry())
                         {
@@ -42,11 +42,17 @@ namespace DivaModManager
                     }
                 }
             }
-            catch
+            catch (Exception exception)
             {
-                Global.logger.WriteLine("Failed to extract update", LoggerType.Error);
+                Global.logger.WriteLine($"解压程序更新失败：{exception.Message}", LoggerType.Error);
+                throw;
             }
-            File.Delete(@$"{sourceFilePath}");
+            finally
+            {
+                File.Delete(sourceFilePath);
+            }
+
+            return Task.CompletedTask;
         }
 
     }

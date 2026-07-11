@@ -29,17 +29,23 @@ namespace DivaModManager
         {
             // Get Version Number
             var localVersion = Assembly.GetExecutingAssembly().GetName().Version.ToString();
+            if (!TryGetUpdateRepository(out var owner, out var repo))
+            {
+                Global.logger.WriteLine(
+                    "This community build has no configured self-update repository.",
+                    LoggerType.Info);
+                return false;
+            }
+
             try
             {
-                var owner = "TekkaGB";
-                var repo = "DivaModManager";
                 Release release = await client.Repository.Release.GetLatest(owner, repo);
-                Match onlineVersionMatch = Regex.Match(release.TagName, @"(?<version>([0-9]+\.?)+)[^a-zA-Z]");
-                string onlineVersion = null;
-                if (onlineVersionMatch.Success)
-                {
-                    onlineVersion = onlineVersionMatch.Value;
-                }
+                Match onlineVersionMatch = Regex.Match(
+                    release.TagName ?? String.Empty,
+                    @"(?<!\d)(?<version>\d+(?:\.\d+){1,3})(?!\d)");
+                string onlineVersion = onlineVersionMatch.Success
+                    ? onlineVersionMatch.Groups["version"].Value
+                    : null;
                 if (UpdateAvailable(onlineVersion, localVersion))
                 {
                     ChangelogBox notification = new ChangelogBox(release, "Diva Mod Manager", $"A new version of Diva Mod Manager is available (v{onlineVersion})!", null, false);
@@ -47,10 +53,32 @@ namespace DivaModManager
                     notification.Activate();
                     if (notification.YesNo)
                     {
-                        string downloadUrl = release.Assets.First().BrowserDownloadUrl;
-                        string fileName = release.Assets.First().Name;
+                        var releaseAsset = release.Assets.FirstOrDefault(asset =>
+                                asset.Name.EndsWith("-win-x64.zip", StringComparison.OrdinalIgnoreCase) &&
+                                !asset.Name.Contains("symbols", StringComparison.OrdinalIgnoreCase)) ??
+                            release.Assets.FirstOrDefault(asset =>
+                                asset.Name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) &&
+                                !asset.Name.Contains("symbols", StringComparison.OrdinalIgnoreCase));
+                        if (releaseAsset == null)
+                        {
+                            Global.logger.WriteLine(
+                                "The release does not contain a supported Windows runtime ZIP.",
+                                LoggerType.Error);
+                            return false;
+                        }
+
+                        string downloadUrl = releaseAsset.BrowserDownloadUrl;
+                        string fileName = releaseAsset.Name;
                         // Download the update
-                        await DownloadDMM(downloadUrl, fileName, onlineVersion, new Progress<DownloadProgress>(ReportUpdateProgress), cancellationToken);
+                        if (!await DownloadDMM(
+                                downloadUrl,
+                                fileName,
+                                onlineVersion,
+                                new Progress<DownloadProgress>(ReportUpdateProgress),
+                                cancellationToken))
+                        {
+                            return false;
+                        }
                         // Notify that the update is about to happen
                         MessageBox.Show($"Finished downloading {fileName}!\nDiva Mod Manager will now restart.", "Notification", MessageBoxButton.OK);
                         // Update DMM
@@ -78,12 +106,33 @@ namespace DivaModManager
             }
             return false;
         }
-        private static async Task DownloadDMM(string uri, string fileName, string version, Progress<DownloadProgress> progress, CancellationTokenSource cancellationToken)
+
+        private static bool TryGetUpdateRepository(out string owner, out string repository)
         {
+            var metadata = Assembly.GetExecutingAssembly()
+                .GetCustomAttributes<AssemblyMetadataAttribute>()
+                .Where(attribute =>
+                    !String.IsNullOrWhiteSpace(attribute.Key) &&
+                    !String.IsNullOrWhiteSpace(attribute.Value))
+                .ToDictionary(
+                    attribute => attribute.Key,
+                    attribute => attribute.Value,
+                    StringComparer.OrdinalIgnoreCase);
+            metadata.TryGetValue("DmmUpdateOwner", out owner);
+            metadata.TryGetValue("DmmUpdateRepository", out repository);
+            return !String.IsNullOrWhiteSpace(owner) &&
+                !String.IsNullOrWhiteSpace(repository);
+        }
+        private static async Task<bool> DownloadDMM(string uri, string fileName, string version, Progress<DownloadProgress> progress, CancellationTokenSource cancellationToken)
+        {
+            var updateDirectory = Path.Combine(Global.assemblyLocation, "Downloads", "DMMUpdate");
+            var temporaryPath = Path.Combine(updateDirectory, $"{version}.download");
+            var packagePath = Path.Combine(updateDirectory, $"{version}.zip");
             try
             {
                 // Create the downloads folder if necessary
-                Directory.CreateDirectory(@$"{Global.assemblyLocation}{Global.s}Downloads{Global.s}DMMUpdate");
+                Directory.CreateDirectory(updateDirectory);
+                File.Delete(temporaryPath);
                 progressBox = new ProgressBox(cancellationToken);
                 progressBox.progressBar.Value = 0;
                 progressBox.progressText.Text = $"Downloading {fileName}";
@@ -92,37 +141,35 @@ namespace DivaModManager
                 progressBox.Show();
                 progressBox.Activate();
                 // Write and download the file
-                using (var fs = new FileStream(
-                    $@"{Global.assemblyLocation}{Global.s}Downloads{Global.s}DMMUpdate{Global.s}{fileName}", System.IO.FileMode.Create, FileAccess.Write, FileShare.None))
+                using (var fs = new FileStream(temporaryPath, System.IO.FileMode.Create, FileAccess.Write, FileShare.None))
                 {
                     await httpClient.DownloadAsync(uri, fs, fileName, progress, cancellationToken.Token);
                 }
-                // Rename the file
-                if (!File.Exists($@"{Global.assemblyLocation}{Global.s}Downloads{Global.s}DMMUpdate{Global.s}{version}.zip"))
-                {
-                    File.Move($@"{Global.assemblyLocation}{Global.s}Downloads{Global.s}DMMUpdate{Global.s}{fileName}", $@"{Global.assemblyLocation}{Global.s}Downloads{Global.s}DMMUpdate{Global.s}{version}.zip");
-                }
+                File.Move(temporaryPath, packagePath, true);
                 progressBox.Close();
+                return true;
             }
             catch (OperationCanceledException)
             {
                 // Remove the file is it will be a partially downloaded one and close up
-                File.Delete(@$"{Global.assemblyLocation}{Global.s}Downloads{Global.s}DMMUpdate{Global.s}{fileName}");
+                File.Delete(temporaryPath);
                 if (progressBox != null)
                 {
                     progressBox.finished = true;
                     progressBox.Close();
                 }
-                return;
+                return false;
             }
             catch (Exception e)
             {
+                File.Delete(temporaryPath);
                 Console.WriteLine($"[ERROR] Error whilst downloading {fileName} {e.Message}");
                 if (progressBox != null)
                 {
                     progressBox.finished = true;
                     progressBox.Close();
                 }
+                return false;
             }
         }
         private static void ReportUpdateProgress(DownloadProgress progress)

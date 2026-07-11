@@ -1,0 +1,53 @@
+# 更新记录
+
+本文件记录 DivaModManager 社区版的重要变化。版本格式遵循 [Semantic Versioning](https://semver.org/)。
+
+## [Unreleased]
+
+暂无。
+
+## [1.4.0] - 2026-07-11
+
+### 基线与归属
+
+- 基于 TekkaGB/DivaModManager `1.3.1`。
+- 纳入 [PR #56](https://github.com/TekkaGB/DivaModManager/pull/56) 中由 UnixNight 提交的 Diva Mod Archive 更新检查补丁。发布时该 PR 仍为开放状态，尚未合并到上游。
+- 保留上游 DivaModManager、DivaModLoader 和 Unverum 的原始归属；本版本是独立社区构建，不是 TekkaGB 官方发布。
+- 本独立项目的开发、规则研究、测试与发布整理由 `gpt5.6-sol` 辅助完成。
+
+### 新增
+
+- 增加本地结构化模组分类器，根据实际文件识别 Legacy Custom Song、New Classics、Additional Difficulty、Module、Accessory、UI、Sound、Cover 和 Plugin 等类别，同时保留作者/下载站 Category。
+- 增加 MEGA39+ 歌曲管理器，解析 Legacy 与 New Classics 数据库，并按 PVID 合并同一歌曲的多个难度。
+- 增加歌曲搜索，以及难度、星级和最终运行状态筛选。异常或超出 1-10 的星级显示为 `?`。
+- 增加歌名、英文名、读音/排序名编辑；写入时保留数据库编码、换行、注释、未知字段和其他 PV 记录。
+- 增加完整歌曲包导入和安全删除，支持 ZIP、7z 和 RAR；修改前创建备份，只删除经反向引用确认独占的资源。
+- 增加小图标、封面和背景的预览与替换，校正 MEGA39+ Sprite 的上下翻转，并保护共享图集中的其他 Sprite。
+- 增加歌曲运行状态诊断、PVID 冲突/补丁来源路径显示和快速打开路径功能。
+- 增加持久化人工运行状态，可选择自动判断、可运行、勉强运行或无法运行；自动诊断始终保留。
+- 增加 New Classics 官曲扩展、Additional Difficulty、歌曲补丁和 Eden Project 依赖体系的专门规则。
+- 增加歌曲管理相关单元测试和真实安装目录的只读回归检查。
+
+### 判定规则
+
+- 主音频、全部可用谱面、数据库明确声明的视频或 Additional Difficulty 目标缺失时判定为无法运行。
+- 只缺少部分谱面时判定为勉强运行；缺少任一小图标、封面或背景也判定为勉强运行。
+- 未声明视频的完整歌曲按 3D PV 处理，不再误报视频缺失。
+- 同 PVID、同配置模组名、兼容作者和同歌名的定义：难度不重复时兼容；难度重复但已知星级不重复时为勉强运行；星级重复或未知时为无法运行。
+- 无谱面的对应歌曲补丁不再产生完整歌曲 PVID 冲突，但会显示补丁路径。
+- `nc_db.toml` 明确声明的 New Classics 官曲扩展可复用 MEGA39+ 官曲 PVID；Legacy 或未登记谱面仍被阻止。
+
+### 修复
+
+- 修复模组预览图继承上下文为空时可能发生的崩溃。
+- 修复多难度歌曲被拆成重复歌曲、共享资源被重复判断和 3D PV 被当作缺少视频的问题。
+- 修复直接显示底层英文异常的问题；歌曲管理的操作错误和健康诊断改为中文，详细异常保留在日志中。
+
+### 安全与兼容性
+
+- 所有新歌曲编辑操作限定为 Windows PC 版 MEGA39+ / Mega Mix+，不解析 AFT、Future Tone 或 PPD 数据库。
+- 对歌曲导入和写入增加路径归一化、目录边界、符号链接/联接点、文件变化、原子写入和回滚检查。
+- 社区 fork 的自更新仓库改为构建时显式配置；未配置时关闭自更新，避免误跟随 TekkaGB 上游发布。
+
+[Unreleased]: ../../compare/v1.4.0...HEAD
+[1.4.0]: ../../releases/tag/v1.4.0

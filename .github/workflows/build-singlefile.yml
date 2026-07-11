@@ -1,35 +1,54 @@
-name: Debug Build and Test
+name: Build and test
 
-on: [push, pull_request]
+on:
+  push:
+    tags-ignore:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  build-release:
+  build-and-test:
     runs-on: windows-latest
-
     env:
-      # Skip dotnet's first-run package cache initialization in CI.
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
 
     steps:
-      - name: Checkout and Initialise
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 6.0.x
+          dotnet-version: |
+            6.0.x
+            9.0.x
+          cache: true
+          cache-dependency-path: "**/*.csproj"
+
+      # SDK 9 provides NuGet Audit while the application still targets .NET 6.
+      - name: Restore and audit dependencies
+        shell: pwsh
+        run: >-
+          dotnet restore DivaModManager.sln
+          -p:NuGetAudit=true
+          -p:NuGetAuditMode=all
+          -p:WarningsAsErrors=NU1901%3BNU1902%3BNU1903%3BNU1904
 
       - name: Test
-        run: dotnet test DivaModManager.Tests/DivaModManager.Tests.csproj -c Release
+        run: dotnet test DivaModManager.sln -c Release --no-restore
 
-      - name: Build release
-        run: dotnet publish DivaModManager/DivaModManager.csproj -c Release -p:PublishSingleFile=true --self-contained false
+      - name: Package smoke test
+        shell: pwsh
+        run: ./scripts/pack-release.ps1 -Version 0.0.0-ci -SkipTests -NoArchive
 
-      # Upload build artifact
-      - name: Upload Artifact
+      - name: Upload packaged application
         uses: actions/upload-artifact@v4
         with:
-          name: DMM-singlefile-${{ github.sha }}
-          path: |
-            DivaModManager/bin/Release/net6.0-windows/win10-x64/publish
-            !DivaModManager/bin/Release/net6.0-windows/win10-x64/publish/DivaModManager
+          name: DivaModManager-win-x64-${{ github.sha }}
+          path: artifacts/release/DivaModManager-v0.0.0-ci-win-x64
+          if-no-files-found: error

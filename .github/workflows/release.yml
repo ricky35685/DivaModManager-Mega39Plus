@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v-prefixed tag to package
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+    steps:
+      - name: Resolve tag
+        id: release
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSHED_TAG: ${{ github.ref_name }}
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          $tag = if ($env:EVENT_NAME -eq "workflow_dispatch") {
+            $env:REQUESTED_TAG
+          } else {
+            $env:PUSHED_TAG
+          }
+          if ($tag -notmatch '^v(?<version>\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$') {
+            throw "Release tags must use the form v1.2.3. Received: $tag"
+          }
+          $version = $Matches.version
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify tag targets this commit
+        shell: pwsh
+        run: |
+          $tagCommit = git rev-list -n 1 "${{ steps.release.outputs.tag }}"
+          $headCommit = git rev-parse HEAD
+          if ($tagCommit -ne $headCommit) {
+            throw "Tag ${{ steps.release.outputs.tag }} does not target the checked-out commit."
+          }
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            6.0.x
+            9.0.x
+          cache: true
+          cache-dependency-path: "**/*.csproj"
+
+      # SDK 9 provides NuGet Audit while the application still targets .NET 6.
+      - name: Restore and audit dependencies
+        shell: pwsh
+        run: >-
+          dotnet restore DivaModManager.sln
+          -p:NuGetAudit=true
+          -p:NuGetAuditMode=all
+          -p:WarningsAsErrors=NU1901%3BNU1902%3BNU1903%3BNU1904
+
+      - name: Package release
+        shell: pwsh
+        run: >-
+          ./scripts/pack-release.ps1
+          -Version "${{ steps.release.outputs.version }}"
+          -UpdateOwner "${{ github.repository_owner }}"
+          -UpdateRepository "${{ github.event.repository.name }}"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: DivaModManager-${{ steps.release.outputs.version }}
+          path: |
+            artifacts/release/*.zip
+            artifacts/release/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $assets = @(
+            Get-ChildItem artifacts/release -Filter '*.zip' | Sort-Object Name | ForEach-Object FullName
+          ) + (Resolve-Path artifacts/release/SHA256SUMS.txt).Path
+          $releaseArguments = @(
+            'release', 'create', '${{ steps.release.outputs.tag }}'
+          ) + $assets + @(
+            '--repo', '${{ github.repository }}',
+            '--title', 'Diva Mod Manager ${{ steps.release.outputs.version }}',
+            '--verify-tag'
+          )
+          $notesFile = "docs/RELEASE_NOTES_${{ steps.release.outputs.version }}.md"
+          if (Test-Path -LiteralPath $notesFile -PathType Leaf) {
+            $releaseArguments += @('--notes-file', $notesFile)
+          } else {
+            $releaseArguments += '--generate-notes'
+          }
+          & gh @releaseArguments
+          if ($LASTEXITCODE -ne 0) {
+            throw 'GitHub Release creation failed.'
+          }

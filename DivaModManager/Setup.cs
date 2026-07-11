@@ -171,7 +171,7 @@ namespace DivaModManager
                     {
                         if (Path.GetExtension(_ArchiveSource).Equals(".7z", StringComparison.InvariantCultureIgnoreCase))
                         {
-                            using (var archive = SevenZipArchive.Open(_ArchiveSource))
+                            using (var archive = SevenZipArchive.OpenArchive(_ArchiveSource, ReaderOptions.ForFilePath))
                             {
                                 var reader = archive.ExtractAllEntries();
                                 while (reader.MoveToNextEntry())
@@ -189,7 +189,7 @@ namespace DivaModManager
                         else
                         {
                             using (Stream stream = File.OpenRead(_ArchiveSource))
-                            using (var reader = ReaderFactory.Open(stream))
+                            using (var reader = ReaderFactory.OpenReader(stream, ReaderOptions.ForExternalStream))
                             {
                                 while (reader.MoveToNextEntry())
                                 {

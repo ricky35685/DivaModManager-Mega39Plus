@@ -1079,14 +1079,14 @@ namespace DivaModManager
 
             if (Path.GetExtension(archivePath).Equals(".7z", StringComparison.OrdinalIgnoreCase))
             {
-                using var archive = SevenZipArchive.Open(archivePath);
+                using var archive = SevenZipArchive.OpenArchive(archivePath, ReaderOptions.ForFilePath);
                 using var sevenZipReader = archive.ExtractAllEntries();
                 ExtractReaderSafely(sevenZipReader, destinationRoot, cancellationToken);
                 return;
             }
 
             using var stream = File.OpenRead(archivePath);
-            using var archiveReader = ReaderFactory.Open(stream);
+            using var archiveReader = ReaderFactory.OpenReader(stream, ReaderOptions.ForExternalStream);
             ExtractReaderSafely(archiveReader, destinationRoot, cancellationToken);
         }
 

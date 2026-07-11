@@ -1,0 +1,48 @@
+diff --git a/MikuMikuLibrary/MikuMikuLibrary.csproj b/MikuMikuLibrary/MikuMikuLibrary.csproj
+index 20c151d..2a49daf 100644
+--- a/MikuMikuLibrary/MikuMikuLibrary.csproj
++++ b/MikuMikuLibrary/MikuMikuLibrary.csproj
+@@ -4 +4 @@
+-    <TargetFramework>net8.0</TargetFramework>
++    <TargetFramework>net6.0</TargetFramework>
+@@ -14 +14 @@
+-    <PackageReference Include="System.Drawing.Common" Version="8.0.1" />
++    <PackageReference Include="System.Drawing.Common" Version="6.0.0" />
+diff --git a/MikuMikuLibrary/Objects/Processing/Assimp/AssimpImporter.cs b/MikuMikuLibrary/Objects/Processing/Assimp/AssimpImporter.cs
+index 3d62d14..3ad738c 100644
+--- a/MikuMikuLibrary/Objects/Processing/Assimp/AssimpImporter.cs
++++ b/MikuMikuLibrary/Objects/Processing/Assimp/AssimpImporter.cs
+@@ -296 +296 @@ public static class AssimpImporter
+-                                    blendWeights[j] += vertexWeight.Weight;
++                                    SetComponent(ref blendWeights, j, GetComponent(blendWeights, j) + vertexWeight.Weight);
+@@ -300 +300 @@ public static class AssimpImporter
+-                                if (vertexWeight.Weight > blendWeights[j])
++                                if (vertexWeight.Weight > GetComponent(blendWeights, j))
+@@ -304 +304 @@ public static class AssimpImporter
+-                                        blendWeights[k] = blendWeights[k - 1];
++                                        SetComponent(ref blendWeights, k, GetComponent(blendWeights, k - 1));
+@@ -308 +308 @@ public static class AssimpImporter
+-                                    blendWeights[j] = vertexWeight.Weight;
++                                    SetComponent(ref blendWeights, j, vertexWeight.Weight);
+@@ -374,0 +375,21 @@ public static class AssimpImporter
++    private static float GetComponent(Vector4 vector, int index) => index switch
++    {
++        0 => vector.X,
++        1 => vector.Y,
++        2 => vector.Z,
++        3 => vector.W,
++        _ => throw new ArgumentOutOfRangeException(nameof(index))
++    };
++
++    private static void SetComponent(ref Vector4 vector, int index, float value)
++    {
++        switch (index)
++        {
++            case 0: vector.X = value; break;
++            case 1: vector.Y = value; break;
++            case 2: vector.Z = value; break;
++            case 3: vector.W = value; break;
++            default: throw new ArgumentOutOfRangeException(nameof(index));
++        }
++    }
++
