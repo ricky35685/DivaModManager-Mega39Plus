@@ -51,7 +51,7 @@ Get-FileHash .\DivaModManager-v1.4.0-win-x64.zip -Algorithm SHA256
 
 本版把 Eden Project 作为依赖生态处理：曲包要求已启用且完整的 Eden Core，Module Pack 和资源补丁不会被误判成普通歌曲；已知 Core Extra Extreme 扩展和恢复歌曲按实际结构识别。共享 Core、Module 和图片数据库中的补丁条目为只读，防止误删其他歌曲所需资源。
 
-Eden 版本混装、缺失 Core 和真实跨模组 PVID 重复仍会报告。详细依据见 [`docs/ModClassification.md`](ModClassification.md)。
+Eden 版本混装、缺失 Core 和真实跨模组 PVID 重复仍会报告。详细依据见 [`docs/ModClassification.md`](https://github.com/ricky35685/DivaModManager-Mega39Plus/blob/v1.4.0/docs/ModClassification.md)。
 
 ## 数据安全
 
@@ -68,4 +68,4 @@ Eden 版本混装、缺失 Core 和真实跨模组 PVID 重复仍会报告。详
 
 截至 2026-07-11，PR #56 仍未合并到 TekkaGB 上游。本 Release 是独立社区项目，不是 GitHub fork 合并请求，也不是 TekkaGB、UnixNight、SEGA 或 Crypton Future Media 的官方发布。
 
-完整变更见 [`CHANGELOG.md`](../CHANGELOG.md)，许可证和第三方组件见 [`LICENSE`](../LICENSE) 与 [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md)。
+完整变更见 [`CHANGELOG.md`](https://github.com/ricky35685/DivaModManager-Mega39Plus/blob/v1.4.0/CHANGELOG.md)，许可证和第三方组件见 [`LICENSE`](https://github.com/ricky35685/DivaModManager-Mega39Plus/blob/v1.4.0/LICENSE) 与 [`THIRD-PARTY-NOTICES.md`](https://github.com/ricky35685/DivaModManager-Mega39Plus/blob/v1.4.0/THIRD-PARTY-NOTICES.md)。
