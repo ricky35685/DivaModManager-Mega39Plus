@@ -599,6 +599,7 @@
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="45"/>
                         </Grid.ColumnDefinitions>
                         <ComboBox Margin="10,0,0,0" Name="GameBox" Height="35" MinWidth="55" Width="65" FontSize="20" FontWeight="Medium" SelectionChanged="GameBox_SelectionChanged" DropDownClosed="GameBox_DropDownClosed"
                                   VerticalContentAlignment="Center" HorizontalAlignment="Stretch" VerticalAlignment="Center">
@@ -621,6 +622,13 @@
                         </Button>
                         <Button FontWeight="Medium" Name="UpdateButton" Margin="0,0,10,0"  Height="34" VerticalAlignment="Center" Grid.Column="7" Background="#181818" BorderBrush="#252525"  Click="Update_Click">
                             <TextBlock Text="Update" TextTrimming="CharacterEllipsis" Foreground="#f2f2f2" FontFamily="{StaticResource AnekLatin}" FontSize="20" FontWeight="Medium"/>
+                        </Button>
+                        <Button Name="SongsButton" Grid.Column="8" Width="35" Height="35" Margin="0,0,10,0"
+                                HorizontalAlignment="Right" VerticalAlignment="Center"
+                                Background="#181818" BorderBrush="#252525" Click="ManageSongsItem_Click"
+                                IsEnabled="{Binding IsEnabled, ElementName=UpdateButton}"
+                                ToolTip="管理 MEGA39+ 自定义歌曲">
+                            <fa5:ImageAwesome Icon="Solid_Music" Width="17" Height="17" Foreground="#f2f2f2"/>
                         </Button>
 
                         <ComboBox Grid.Column="5" Margin="0,0,10,0" Height="35" FontSize="20" FontFamily="{StaticResource AnekLatin}" FontWeight="Medium" Name="LauncherOptionsBox" SelectionChanged="LauncherOptionsBox_SelectionChanged"/>
@@ -668,6 +676,8 @@
                                 </DataGrid.ColumnHeaderStyle>
                                 <DataGrid.ContextMenu>
                                     <ContextMenu>
+                                        <MenuItem Header="管理自定义歌曲" IsCheckable="False" Click="ManageSongsItem_Click"/>
+                                        <Separator/>
                                         <MenuItem Header="Configure Mod" IsCheckable="False" Click="ConfigureModItem_Click"/>
                                         <MenuItem Header="Rename Mod Folder" IsCheckable="False" Click="EditItem_Click"/>
                                         <MenuItem Header="Open Mod Folder" IsCheckable="False" Click="OpenItem_Click"/>

@@ -888,6 +888,36 @@ namespace DivaModManager
                     cmw.ShowDialog();
                 }
         }
+
+        private void ManageSongsItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (!UpdateButton.IsEnabled)
+                return;
+
+            var modsFolder = Global.config.Configs[Global.config.CurrentGame].ModsFolder;
+            if (String.IsNullOrWhiteSpace(modsFolder) || !Directory.Exists(modsFolder))
+            {
+                MessageBox.Show(
+                    "请先完成管理器设置，再管理 MEGA39+ 歌曲。",
+                    "歌曲管理器",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            string selectedModRoot = null;
+            if (ModGrid.SelectedItems.Count == 1 && ModGrid.SelectedItem is Mod selectedMod)
+                selectedModRoot = Path.Combine(modsFolder, selectedMod.name);
+
+            var songManager = new SongManagerWindow(modsFolder, selectedModRoot)
+            {
+                Owner = this
+            };
+            songManager.ShowDialog();
+
+            // Importing a complete song package creates a new mod folder.
+            Refresh();
+        }
         private void FetchItem_Click(object sender, RoutedEventArgs e)
         {
             var selectedMods = ModGrid.SelectedItems;
