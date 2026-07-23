@@ -135,7 +135,8 @@ namespace DivaModManager.UI
                 songs.Clear();
                 foreach (var entry in entries.OrderBy(item => item.PvId).ThenBy(item => item.ModName))
                 {
-                    runStatusOverrideStore.Apply(entry);
+                    if (!entry.IsOrphanResourceEntry)
+                        runStatusOverrideStore.Apply(entry);
                     songs.Add(new SongRow(entry));
                 }
 
@@ -143,7 +144,15 @@ namespace DivaModManager.UI
                 songsView.Refresh();
                 RestoreSelection(selectedKey);
                 UpdateViewSummary();
-                StatusText.Text = $"扫描完成，共识别 {songs.Count} 首歌曲";
+                var songCount = songs.Count(row => !row.Entry.IsOrphanResourceEntry);
+                var orphanCount = songs
+                    .SelectMany(row => row.Entry.OrphanResources)
+                    .Select(resource => resource.Path)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count();
+                StatusText.Text = orphanCount > 0
+                    ? $"扫描完成，共识别 {songCount} 首歌曲、{orphanCount} 个废案资源"
+                    : $"扫描完成，共识别 {songCount} 首歌曲";
                 return true;
             }
             catch (OperationCanceledException)
@@ -192,8 +201,16 @@ namespace DivaModManager.UI
             }
 
             var runStatusFilter = RunStatusFilterBox.SelectedItem as RunStatusFilterOption;
-            if (runStatusFilter?.Status is SongRunStatus requiredStatus && row.RunStatus != requiredStatus)
-                return false;
+            if (runStatusFilter != null)
+            {
+                if (runStatusFilter.HasOrphanResourcesOnly && !row.Entry.HasOrphanResources)
+                    return false;
+                if (runStatusFilter.Status is SongRunStatus requiredStatus &&
+                    (row.Entry.IsOrphanResourceEntry || row.RunStatus != requiredStatus))
+                {
+                    return false;
+                }
+            }
 
             var searchText = SearchBox.Text?.Trim();
             return String.IsNullOrWhiteSpace(searchText) ||
@@ -237,8 +254,17 @@ namespace DivaModManager.UI
 
         private void UpdateViewSummary()
         {
-            var visibleCount = songsView.Cast<object>().Count();
-            CountText.Text = $"{visibleCount} 首歌曲";
+            var visibleRows = songsView.Cast<SongRow>().ToArray();
+            var visibleCount = visibleRows.Length;
+            var songCount = visibleRows.Count(row => !row.Entry.IsOrphanResourceEntry);
+            var orphanCount = visibleRows
+                .SelectMany(row => row.Entry.OrphanResources)
+                .Select(resource => resource.Path)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count();
+            CountText.Text = orphanCount > 0
+                ? $"{songCount} 首 · {orphanCount} 个废案"
+                : $"{songCount} 首歌曲";
 
             if (visibleCount == 0)
             {
@@ -265,34 +291,42 @@ namespace DivaModManager.UI
         {
             var hasSelection = row != null && !isBusy;
             var isSongPatch = row?.Entry.IsSongPatch == true;
+            var isOrphanResourceEntry = row?.Entry.IsOrphanResourceEntry == true;
+            var isReadOnlyEntry = isSongPatch || isOrphanResourceEntry;
             var canEditMetadata = hasSelection &&
-                                  !isSongPatch &&
+                                  !isReadOnlyEntry &&
                                   !String.IsNullOrWhiteSpace(row.Entry.DatabasePath) &&
                                   File.Exists(row.Entry.DatabasePath);
             SongNameBox.IsEnabled = canEditMetadata;
             SongNameEnglishBox.IsEnabled = canEditMetadata;
             SongNameReadingBox.IsEnabled = canEditMetadata;
             SaveMetadataButton.IsEnabled = canEditMetadata;
-            ManualRunStatusBox.IsEnabled = hasSelection;
-            SaveRunStatusOverrideButton.IsEnabled = hasSelection;
+            ManualRunStatusBox.IsEnabled = hasSelection && !isOrphanResourceEntry;
+            SaveRunStatusOverrideButton.IsEnabled = hasSelection && !isOrphanResourceEntry;
             ReplaceArtworkButton.IsEnabled = false;
             OpenFolderButton.IsEnabled = hasSelection;
-            DeleteSongButton.IsEnabled = hasSelection && !isSongPatch;
+            DeleteSongButton.IsEnabled = hasSelection && !isReadOnlyEntry;
+            ArtworkControlsPanel.IsEnabled = hasSelection && !isOrphanResourceEntry;
 
             const string patchProtectionMessage =
                 "这是歌曲补丁，会复用或扩展其他歌曲。为避免破坏补丁与原曲的关系，不能修改歌名或删除；仍可预览图片并打开目录。";
-            var metadataToolTip = isSongPatch ? patchProtectionMessage : null;
+            const string orphanProtectionMessage =
+                "这是未被歌曲数据库声明的废案资源，只提供查看和定位；不会参与歌曲运行判断，也不会随“删除歌曲”处理。";
+            var protectionMessage = isOrphanResourceEntry
+                ? orphanProtectionMessage
+                : patchProtectionMessage;
+            var metadataToolTip = isReadOnlyEntry ? protectionMessage : null;
             SongNameBox.ToolTip = metadataToolTip;
             SongNameEnglishBox.ToolTip = metadataToolTip;
             SongNameReadingBox.ToolTip = metadataToolTip;
             SaveMetadataButton.ToolTip = metadataToolTip;
-            DeleteSongButton.ToolTip = isSongPatch
-                ? patchProtectionMessage
+            DeleteSongButton.ToolTip = isReadOnlyEntry
+                ? protectionMessage
                 : hasSelection
                     ? "删除数据库条目和独占资源，并在修改前创建备份"
                     : null;
-            PatchWriteProtectionText.Text = patchProtectionMessage;
-            PatchWriteProtectionText.Visibility = isSongPatch ? Visibility.Visible : Visibility.Collapsed;
+            PatchWriteProtectionText.Text = protectionMessage;
+            PatchWriteProtectionText.Visibility = isReadOnlyEntry ? Visibility.Visible : Visibility.Collapsed;
 
             if (row == null)
             {
@@ -317,13 +351,15 @@ namespace DivaModManager.UI
                 ConflictSourcesPanel.Visibility = Visibility.Collapsed;
                 PatchSourcesItems.ItemsSource = null;
                 PatchSourcesPanel.Visibility = Visibility.Collapsed;
+                OrphanResourcesItems.ItemsSource = null;
+                OrphanResourcesPanel.Visibility = Visibility.Collapsed;
                 ClearArtworkPreview("请选择歌曲");
                 return;
             }
 
             DetailsTitleText.Text = row.SongName;
             var officialMarker = row.Entry.IsMega39PlusOfficialPvId ? " · 官曲 PVID" : String.Empty;
-            DetailsMetaText.Text = $"PV {row.PvId} · {row.ModName} · {row.FormatDisplayName}{officialMarker}";
+            DetailsMetaText.Text = $"PV {row.PvIdDisplay} · {row.ModName} · {row.FormatDisplayName}{officialMarker}";
             DetailsAuthorText.Text = String.IsNullOrWhiteSpace(row.Entry.AuthorSummary)
                 ? String.Empty
                 : $"作者：{row.Entry.AuthorSummary}";
@@ -333,8 +369,12 @@ namespace DivaModManager.UI
             SongNameBox.Text = row.Entry.SongName;
             SongNameEnglishBox.Text = row.Entry.SongNameEnglish;
             SongNameReadingBox.Text = row.Entry.SongNameReading;
-            DetailsDifficultiesLabel.Text = $"难度谱面（{row.Entry.Difficulties.Count}）";
-            DetailsDifficultiesText.Text = FormatDifficulties(row.Entry.Difficulties);
+            DetailsDifficultiesLabel.Text = isOrphanResourceEntry
+                ? "难度谱面"
+                : $"难度谱面（{row.Entry.Difficulties.Count}）";
+            DetailsDifficultiesText.Text = isOrphanResourceEntry
+                ? "废案文件不作为可选难度载入"
+                : FormatDifficulties(row.Entry.Difficulties);
             DetailsRunStatusText.Text = row.RunStatusTooltip;
             DetailsRunStatusText.Foreground = row.RunStatus switch
             {
@@ -342,14 +382,20 @@ namespace DivaModManager.UI
                 SongRunStatus.Warning => new SolidColorBrush(Color.FromRgb(255, 209, 102)),
                 _ => new SolidColorBrush(Color.FromRgb(228, 228, 228))
             };
-            ManualRunStatusBox.SelectedItem = ManualRunStatusOption.ForStatus(row.Entry.ManualRunStatusOverride);
-            ManualRunStatusHintText.Text = row.Entry.HasManualRunStatusOverride
+            ManualRunStatusBox.SelectedItem = isOrphanResourceEntry
+                ? ManualRunStatusOption.Automatic
+                : ManualRunStatusOption.ForStatus(row.Entry.ManualRunStatusOverride);
+            ManualRunStatusHintText.Text = isOrphanResourceEntry
+                ? String.Empty
+                : row.Entry.HasManualRunStatusOverride
                 ? $"已保存人工覆盖；自动判断仍为“{FormatRunStatus(row.Entry.AutomaticRunStatus)}”，自动诊断内容未被修改。"
                 : "当前使用自动扫描结果。";
             ManualRunStatusHintText.Foreground = row.Entry.HasManualRunStatusOverride
                 ? new SolidColorBrush(Color.FromRgb(118, 199, 192))
                 : new SolidColorBrush(Color.FromRgb(168, 168, 168));
-            ManualRunStatusHintText.Visibility = Visibility.Visible;
+            ManualRunStatusHintText.Visibility = isOrphanResourceEntry
+                ? Visibility.Collapsed
+                : Visibility.Visible;
             DetailsAssetStatusText.Text = row.AssetStatusDisplay;
             DetailsWarningText.Text = row.Entry.WarningsDisplay;
             DetailsWarningText.Visibility = String.IsNullOrWhiteSpace(row.Entry.WarningsDisplay)
@@ -370,9 +416,16 @@ namespace DivaModManager.UI
             PatchSourcesPanel.Visibility = row.Entry.PatchSources.Count > 0
                 ? Visibility.Visible
                 : Visibility.Collapsed;
+            OrphanResourcesItems.ItemsSource = row.Entry.OrphanResources;
+            OrphanResourcesLabel.Text = $"废案资源（{row.Entry.OrphanResources.Count}）";
+            OrphanResourcesPanel.Visibility = row.Entry.HasOrphanResources
+                ? Visibility.Visible
+                : Visibility.Collapsed;
 
-            if (hasSelection)
+            if (hasSelection && !isOrphanResourceEntry)
                 _ = LoadArtworkPreviewAsync(row);
+            else if (isOrphanResourceEntry)
+                ClearArtworkPreview("废案资源不参与歌曲图片预览");
             else
                 CancelArtworkPreview();
         }
@@ -386,7 +439,7 @@ namespace DivaModManager.UI
         {
             var row = SongGrid.SelectedItem as SongRow;
             var option = ManualRunStatusBox.SelectedItem as ManualRunStatusOption;
-            if (row == null || option == null)
+            if (row == null || option == null || row.Entry.IsOrphanResourceEntry)
                 return;
 
             try
@@ -424,6 +477,16 @@ namespace DivaModManager.UI
             var row = SongGrid.SelectedItem as SongRow;
             if (row == null)
                 return;
+            if (row.Entry.IsOrphanResourceEntry)
+            {
+                MessageBox.Show(
+                    this,
+                    "废案资源没有歌曲数据库条目，不能修改歌名。可使用右侧的文件按钮定位并手动检查。",
+                    "废案资源为只读",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
             if (row.Entry.IsSongPatch)
             {
                 MessageBox.Show(
@@ -458,7 +521,7 @@ namespace DivaModManager.UI
         private async void ReplaceArtworkButton_Click(object sender, RoutedEventArgs e)
         {
             var row = SongGrid.SelectedItem as SongRow;
-            if (row == null)
+            if (row == null || row.Entry.IsOrphanResourceEntry)
                 return;
 
             var dialog = new OpenFileDialog
@@ -500,9 +563,13 @@ namespace DivaModManager.UI
             CancelArtworkPreview();
             currentArtworkPreview = null;
             ReplaceArtworkButton.IsEnabled = false;
-            if (row == null || isBusy)
+            if (row == null || isBusy || row.Entry.IsOrphanResourceEntry)
             {
-                ClearArtworkPreview(row == null ? "请选择歌曲" : "操作完成后刷新预览");
+                ClearArtworkPreview(row == null
+                    ? "请选择歌曲"
+                    : row.Entry.IsOrphanResourceEntry
+                        ? "废案资源不参与歌曲图片预览"
+                        : "操作完成后刷新预览");
                 return;
             }
 
@@ -585,6 +652,16 @@ namespace DivaModManager.UI
             var row = SongGrid.SelectedItem as SongRow;
             if (row == null)
                 return;
+            if (row.Entry.IsOrphanResourceEntry)
+            {
+                MessageBox.Show(
+                    this,
+                    "废案资源不会随“删除歌曲”处理。请先使用文件按钮核对路径，再在模组目录中手动管理。",
+                    "废案资源为只读",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
             if (row.Entry.IsSongPatch)
             {
                 MessageBox.Show(
@@ -1111,13 +1188,24 @@ namespace DivaModManager.UI
             public SongEntry Entry { get; }
             public event PropertyChangedEventHandler PropertyChanged;
             public int PvId => Entry.PvId;
+            public string PvIdDisplay => Entry.IsOrphanResourceEntry && String.IsNullOrWhiteSpace(Entry.RawPvId)
+                ? "—"
+                : Entry.PvId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            public bool IsOrphanResourceEntry => Entry.IsOrphanResourceEntry;
             public string SongName => String.IsNullOrWhiteSpace(Entry.SongName) ? "（未命名）" : Entry.SongName;
             public string ModName => String.IsNullOrWhiteSpace(Entry.ModName) ? "（未知模组）" : Entry.ModName;
             public string FormatDisplayName => Entry.FormatDisplayName;
+            public string OrphanResourceCountDisplay => Entry.HasOrphanResources
+                ? Entry.OrphanResources.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + " 个"
+                : "—";
             public string DifficultiesDisplay => Entry.DifficultiesDisplay;
             public SongRunStatus RunStatus => Entry.RunStatus;
-            public string RunStatusDisplay => FormatRunStatus(RunStatus) +
-                (Entry.HasManualRunStatusOverride ? "（人工）" : String.Empty);
+            public string RunStatusDisplay => Entry.IsOrphanResourceEntry
+                ? Entry.RunStatus == SongRunStatus.Broken
+                    ? "废案（会覆盖官曲）"
+                    : "不参与判断"
+                : FormatRunStatus(RunStatus) +
+                    (Entry.HasManualRunStatusOverride ? "（人工）" : String.Empty);
             public string RunStatusTooltip
             {
                 get
@@ -1125,6 +1213,12 @@ namespace DivaModManager.UI
                     var automaticDiagnosis = String.IsNullOrWhiteSpace(Entry.AutomaticRunStatusReasonsDisplay)
                         ? "未发现阻止运行的问题"
                         : Entry.AutomaticRunStatusReasonsDisplay;
+                    if (Entry.IsOrphanResourceEntry)
+                    {
+                        return Entry.RunStatus == SongRunStatus.Broken
+                            ? RunStatusDisplay + "：" + automaticDiagnosis
+                            : "废案资源：未被歌曲数据库声明，不参与歌曲运行判断或删除歌曲。";
+                    }
                     if (!Entry.HasManualRunStatusOverride)
                         return RunStatusDisplay + "：" + automaticDiagnosis;
 
@@ -1133,9 +1227,13 @@ namespace DivaModManager.UI
                 }
             }
             public bool UsesOriginalSongAssets => Entry.IsSongPatch;
-            public string AudioStatus => UsesOriginalSongAssets ? "沿用原曲" : Entry.AudioExists ? "可用" : "缺失";
+            public string AudioStatus => Entry.IsOrphanResourceEntry
+                ? Entry.OrphanResources.Any(resource => resource.Kind == SongResourceKind.Audio) ? "废案" : "—"
+                : UsesOriginalSongAssets ? "沿用原曲" : Entry.AudioExists ? "可用" : "缺失";
             public string VideoStatus => UsesOriginalSongAssets
                 ? "沿用原曲"
+                : Entry.IsOrphanResourceEntry
+                    ? Entry.OrphanResources.Any(resource => resource.Kind == SongResourceKind.Video) ? "废案" : "—"
                 : Entry.Uses3dPv
                     ? "3D PV（无需视频）"
                     : Entry.VideoExists ? "可用" : "缺失";
@@ -1143,6 +1241,12 @@ namespace DivaModManager.UI
             {
                 get
                 {
+                    if (Entry.IsOrphanResourceEntry)
+                    {
+                        return Entry.OrphanResources.Any(resource => resource.Kind == SongResourceKind.Artwork)
+                            ? "废案"
+                            : "—";
+                    }
                     if (UsesOriginalSongAssets)
                         return "沿用原曲";
                     if (Entry.ArtworkComplete)
@@ -1160,6 +1264,8 @@ namespace DivaModManager.UI
             }
             public string AssetStatusDisplay => UsesOriginalSongAssets
                 ? "音频：沿用原曲　视频：沿用原曲　图片：沿用原曲"
+                : Entry.IsOrphanResourceEntry
+                    ? Entry.AssetStatus
                 : Entry.Uses3dPv
                     ? $"音频：{AudioStatus}　视频：{VideoStatus}　封面：{ArtworkStatus}"
                 : String.IsNullOrWhiteSpace(Entry.AssetStatus)
@@ -1186,10 +1292,14 @@ namespace DivaModManager.UI
 
         private sealed class RunStatusFilterOption
         {
-            private RunStatusFilterOption(SongRunStatus? status, string displayName)
+            private RunStatusFilterOption(
+                SongRunStatus? status,
+                string displayName,
+                bool hasOrphanResourcesOnly = false)
             {
                 Status = status;
                 DisplayName = displayName;
+                HasOrphanResourcesOnly = hasOrphanResourcesOnly;
             }
 
             public static IReadOnlyList<RunStatusFilterOption> Options { get; } = new[]
@@ -1197,11 +1307,13 @@ namespace DivaModManager.UI
                 new RunStatusFilterOption(null, "全部状态"),
                 new RunStatusFilterOption(SongRunStatus.Ready, "可运行"),
                 new RunStatusFilterOption(SongRunStatus.Warning, "勉强运行"),
-                new RunStatusFilterOption(SongRunStatus.Broken, "无法运行")
+                new RunStatusFilterOption(SongRunStatus.Broken, "无法运行"),
+                new RunStatusFilterOption(null, "废案资源", true)
             };
 
             public SongRunStatus? Status { get; }
             public string DisplayName { get; }
+            public bool HasOrphanResourcesOnly { get; }
         }
 
         private sealed class ManualRunStatusOption

@@ -91,6 +91,44 @@ metadata editing and whole-song deletion are disabled to protect shared Core,
 Module, and artwork databases. Independent full songs that reuse a PVID remain
 real conflicts even when their names happen to match.
 
+## Database ownership and abandoned resources
+
+Song Manager treats active entries in `mod_pv_db.txt`, `mod_nc_pv_db.txt`, and
+`nc_db.toml` as the authoritative song manifest. It compares that manifest with
+files in the conventional MEGA39+ song locations below:
+
+| Location | Candidate resource |
+| --- | --- |
+| `rom/script/**/*.dsc`, `rom/script_nc/**/*.dsc` | Chart |
+| `rom/sound/song/**/*.ogg` | Song audio |
+| `rom/movie/**/*.{mp4,usm}` | PV video |
+| `rom/2d/spr_sel_pv*.farc` | Per-PVID song artwork |
+| `rom/add_param/**/*.adp` | Additional parameter |
+
+An existing file is declared when an active database field resolves to its
+exact path. New Classics scripts use the exact `script_file_name`; Legacy array
+slots beyond a valid `difficulty.<name>.length` remain inactive. Per-PVID
+artwork and additional parameters are also accepted through the standard raw
+PVID naming convention. A FARC named by a local `mod_spr_db.bin` sprite set is
+database-owned even when its filename has a custom suffix. Shared
+`spr_sel_pvtmb*` archives are not classified as abandoned files because one
+archive may contain thumbnails for many songs.
+
+The remaining candidates are shown as abandoned resources. They stay outside
+`Difficulties`, health checks, PVID conflict and patch matching, and
+`ReferencedAssetPaths`, so deleting a song cannot silently delete a draft.
+Files actually resolved as media for another enabled mod are removed from the
+abandoned set after the complete virtual-file-system scan.
+
+If a PVID has no database entry, Song Manager creates a searchable, read-only
+abandoned-resource row when a chart establishes that the content is a song
+draft. Audio-only content is left to the Cover classifier rather than being
+promoted to a song. Unregistered charts targeting an MM+ stock PVID remain a
+blocking exception: DivaModLoader can overlay those physical paths without a
+song metadata record. The row remains read-only and is labelled as abandoned,
+but it reports the stock-song override risk in red. Declared New Classics and
+verified Eden extensions keep their existing exemptions.
+
 ## Song health and manual overrides
 
 Runtime checks are specific to MEGA39+ and distinguish required assets from

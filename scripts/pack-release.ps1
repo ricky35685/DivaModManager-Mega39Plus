@@ -138,7 +138,10 @@ try {
         '',
         'Keep the x64 and x86 directories beside DivaModManager.exe.'
     )
-    Set-Content -LiteralPath (Join-Path $packageRoot 'BUILD-INFO.txt') -Value $buildInfo -Encoding utf8NoBOM
+    # Windows PowerShell 5.1 does not expose the utf8NoBOM encoding name.
+    # UTF-8 with a BOM is valid for this plain-text metadata file and keeps the
+    # release script usable from both Windows PowerShell and PowerShell 7.
+    Set-Content -LiteralPath (Join-Path $packageRoot 'BUILD-INFO.txt') -Value $buildInfo -Encoding UTF8
 
     if ($NoArchive) {
         Write-Host "Package directory: $packageRoot"

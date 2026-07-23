@@ -10,6 +10,9 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using MikuMikuLibrary.Archives.CriMw;
+using MikuMikuLibrary.Databases;
+using MikuMikuLibrary.IO;
+using MikuMikuLibrary.Sprites;
 using Tomlyn;
 using Tomlyn.Model;
 
@@ -70,6 +73,10 @@ namespace DivaModManager
 
         private static readonly Regex ChartFilePvIdPattern = new Regex(
             @"^pv_?0*(\d+)(?:_|$)",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+        private static readonly Regex ArtworkFilePvIdPattern = new Regex(
+            @"^spr_sel_pv_?0*(\d+)(?:_|$)",
             RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
         private static readonly string[] NewClassicsDifficultyNames =
@@ -148,6 +155,7 @@ namespace DivaModManager
                     assetResolver);
             }
 
+            ReconcileCrossModOrphanResources(entries);
             MarkCrossModIdConflicts(entries);
             ValidateKnownModDependencies(entries, scanContexts);
             if (evaluateArtwork)
@@ -307,9 +315,18 @@ namespace DivaModManager
                 }
 
                 isComplete &= AddOfficialChartOverlayEntries(
+                    contentRoot,
+                    contentEntries,
+                    cancellationToken);
+
+                var hasSongDatabase = legacyDatabases.Count > 0 ||
+                    newClassicsMetadataDatabases.Count > 0 ||
+                    !String.IsNullOrWhiteSpace(newClassicsDatabasePath);
+                isComplete &= AddOrphanResourceEntries(
                     config,
                     modRoot,
                     contentRoot,
+                    hasSongDatabase,
                     config.Warnings,
                     contentEntries,
                     cancellationToken);
@@ -326,10 +343,7 @@ namespace DivaModManager
         }
 
         private static bool AddOfficialChartOverlayEntries(
-            ModConfig config,
-            string modRoot,
             string contentRoot,
-            IReadOnlyCollection<string> configWarnings,
             ICollection<SongEntry> contentEntries,
             CancellationToken cancellationToken)
         {
@@ -393,20 +407,67 @@ namespace DivaModManager
                             .Distinct(StringComparer.OrdinalIgnoreCase)
                             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
                             .ToArray();
-                        existingEntry.ReferencedAssetPaths = existingEntry.ReferencedAssetPaths
-                            .Concat(paths)
-                            .Distinct(StringComparer.OrdinalIgnoreCase)
-                            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-                            .ToArray();
                     }
+                }
+            }
+
+            return isComplete;
+        }
+
+        private static bool AddOrphanResourceEntries(
+            ModConfig config,
+            string modRoot,
+            string contentRoot,
+            bool hasSongDatabase,
+            IReadOnlyCollection<string> configWarnings,
+            ICollection<SongEntry> contentEntries,
+            CancellationToken cancellationToken)
+        {
+            var candidates = EnumerateSongResourceCandidates(
+                contentRoot,
+                cancellationToken,
+                out var isComplete);
+            if (candidates.Count == 0 ||
+                (!hasSongDatabase && !candidates.Any(candidate => candidate.Kind == SongResourceKind.Chart)))
+            {
+                return isComplete;
+            }
+
+            var declaredPaths = BuildDeclaredResourcePathSet(contentRoot, contentEntries);
+            var orphanCandidates = candidates
+                .Where(candidate => !declaredPaths.Contains(candidate.Path))
+                .OrderBy(candidate => candidate.PvId ?? Int32.MaxValue)
+                .ThenBy(candidate => candidate.Kind)
+                .ThenBy(candidate => candidate.Path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (orphanCandidates.Length == 0)
+                return isComplete;
+
+            foreach (var group in orphanCandidates.GroupBy(candidate => candidate.PvId))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var resources = group
+                    .Select(candidate => CreateOrphanResource(contentRoot, candidate))
+                    .ToArray();
+                var matchingEntries = group.Key.HasValue
+                    ? contentEntries.Where(entry =>
+                        !entry.IsOrphanResourceEntry &&
+                        entry.PvId == group.Key.Value).ToArray()
+                    : Array.Empty<SongEntry>();
+                if (matchingEntries.Length > 0)
+                {
+                    foreach (var entry in matchingEntries)
+                        AttachOrphanResources(entry, resources);
                     continue;
                 }
 
+                var rawPvId = group.Key?.ToString(CultureInfo.InvariantCulture) ?? String.Empty;
+                var warning = resources.Length == 1
+                    ? "发现 1 个未被歌曲数据库声明的废案资源；它不参与运行判断或歌曲删除。"
+                    : $"发现 {resources.Length} 个未被歌曲数据库声明的废案资源；它们不参与运行判断或歌曲删除。";
                 var warnings = configWarnings.ToList();
-                AddUnique(
-                    warnings,
-                    $"检测到指向 MEGA39+ 官曲 PVID {pair.Key} 的谱面文件，但未找到对应的 PV 数据库元数据。");
-                var entry = new SongEntry
+                AddUnique(warnings, warning);
+                var orphanEntry = new SongEntry
                 {
                     ModName = config.ModName,
                     ModAuthor = config.ModAuthor,
@@ -416,64 +477,368 @@ namespace DivaModManager
                     IsEdenProjectCore = config.IsEdenProjectCore,
                     HasValidEdenCoreSignature = config.HasValidEdenCoreSignature,
                     RequiresEdenProjectCore = config.RequiresEdenProjectCore,
-                    PvId = pair.Key,
-                    RawPvId = pair.Key.ToString(CultureInfo.InvariantCulture),
-                    RawPvIds = new[] { pair.Key.ToString(CultureInfo.InvariantCulture) },
-                    SongName = $"官曲 PV {pair.Key} 谱面覆盖",
-                    Format = SongFormat.AdditionalDifficulty,
-                    Difficulties = BuildDetectedChartDifficulties(contentRoot, paths),
-                    IsSongPatch = true,
-                    LocalChartOverlayPaths = paths
+                    PvId = group.Key ?? 0,
+                    RawPvId = rawPvId,
+                    RawPvIds = String.IsNullOrWhiteSpace(rawPvId)
+                        ? Array.Empty<string>()
+                        : new[] { rawPvId },
+                    SongName = group.Key.HasValue
+                        ? $"PV {group.Key.Value} 废案资源"
+                        : "未归属的废案资源",
+                    Format = SongFormat.OrphanResources,
+                    IsOrphanResourceEntry = true,
+                    IsMega39PlusOfficialPvId = group.Key.HasValue &&
+                        Mega39PlusStockPvIds.Contains(group.Key.Value),
+                    OrphanResources = resources,
+                    ReferencedAssetPaths = Array.Empty<string>(),
+                    AssetStatus = $"废案资源：{resources.Length} 个（不参与运行判断）",
+                    Warnings = warnings.ToArray()
                 };
-                CompleteEntry(entry, warnings, null, null);
-                contentEntries.Add(entry);
+                if (orphanEntry.IsMega39PlusOfficialPvId)
+                {
+                    var unsafeCharts = resources
+                        .Where(resource => resource.Kind == SongResourceKind.Chart)
+                        .Select(resource => resource.Path)
+                        .ToArray();
+                    if (unsafeCharts.Length > 0)
+                    {
+                        orphanEntry.LocalChartOverlayPaths = unsafeCharts;
+                        AddBlockingRunStatusReason(
+                            orphanEntry,
+                            $"PVID {orphanEntry.PvId} 属于 MEGA39+ 官曲，但这些未登记谱面会通过虚拟文件系统直接覆盖官曲：{String.Join("; ", unsafeCharts)}。只有 nc_db.toml 明确声明的 New Classics 扩展或已核实的 Eden 扩展可以使用官曲 PVID。");
+                    }
+                }
+                orphanEntry.SearchText = BuildSearchText(orphanEntry);
+                contentEntries.Add(orphanEntry);
             }
 
             return isComplete;
         }
 
-        private static IReadOnlyList<SongDifficulty> BuildDetectedChartDifficulties(
-            string contentRoot,
-            IEnumerable<string> chartPaths)
+        private static void AttachOrphanResources(
+            SongEntry entry,
+            IReadOnlyCollection<SongOrphanResource> resources)
         {
-            var difficultyIndexes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            var difficulties = new List<SongDifficulty>();
-            foreach (var chartPath in chartPaths)
-            {
-                var fileName = Path.GetFileNameWithoutExtension(chartPath);
-                var normalizedName = InferDifficultyName(fileName);
-                difficultyIndexes.TryGetValue(normalizedName, out var index);
-                difficultyIndexes[normalizedName] = index + 1;
-                var reference = Path.GetRelativePath(contentRoot, chartPath)
-                    .Replace(Path.DirectorySeparatorChar, '/');
-                difficulties.Add(new SongDifficulty
-                {
-                    Name = normalizedName,
-                    NormalizedName = normalizedName,
-                    IsExtra = normalizedName.StartsWith("ex_", StringComparison.OrdinalIgnoreCase),
-                    Index = index,
-                    ScriptReference = reference,
-                    ScriptPath = chartPath,
-                    ScriptExists = true,
-                    Source = SongDifficultySource.DetectedChart
-                });
-            }
-            return OrderDifficulties(difficulties);
+            entry.OrphanResources = entry.OrphanResources
+                .Concat(resources)
+                .GroupBy(resource => resource.Path, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .OrderBy(resource => resource.Kind)
+                .ThenBy(resource => resource.Path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            UpdateOrphanResourceWarning(entry);
+            entry.SearchText = BuildSearchText(entry);
         }
 
-        private static string InferDifficultyName(string fileName)
+        private static void ReconcileCrossModOrphanResources(ICollection<SongEntry> entries)
         {
-            foreach (var name in NewClassicsDifficultyNames.OrderByDescending(name => name.Length))
+            var declaredPaths = entries
+                .Where(entry => !entry.IsOrphanResourceEntry && entry.ModEnabled)
+                .SelectMany(entry => entry.ReferencedAssetPaths)
+                .Where(path => !String.IsNullOrWhiteSpace(path))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var emptyOrphanEntries = new List<SongEntry>();
+            foreach (var entry in entries.Where(entry => entry.HasOrphanResources).ToArray())
             {
-                if (Regex.IsMatch(
-                    fileName ?? String.Empty,
-                    $@"(?:^|_){Regex.Escape(name)}(?:_|$)",
-                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                entry.OrphanResources = entry.OrphanResources
+                    .Where(resource => !declaredPaths.Contains(resource.Path))
+                    .ToArray();
+                if (entry.IsOrphanResourceEntry && !entry.HasOrphanResources)
                 {
-                    return name;
+                    emptyOrphanEntries.Add(entry);
+                    continue;
+                }
+
+                if (entry.IsOrphanResourceEntry)
+                    entry.AssetStatus = $"废案资源：{entry.OrphanResources.Count} 个（不参与运行判断）";
+                UpdateOrphanResourceWarning(entry);
+                entry.SearchText = BuildSearchText(entry);
+            }
+
+            foreach (var entry in emptyOrphanEntries)
+                entries.Remove(entry);
+        }
+
+        private static void UpdateOrphanResourceWarning(SongEntry entry)
+        {
+            var warnings = entry.Warnings
+                .Where(warning =>
+                    warning.IndexOf(
+                        "未被歌曲数据库声明的废案资源",
+                        StringComparison.OrdinalIgnoreCase) < 0)
+                .ToList();
+            if (entry.OrphanResources.Count == 1)
+            {
+                AddUnique(
+                    warnings,
+                    "发现 1 个未被歌曲数据库声明的废案资源；它不参与运行判断或歌曲删除。");
+            }
+            else if (entry.OrphanResources.Count > 1)
+            {
+                AddUnique(
+                    warnings,
+                    $"发现 {entry.OrphanResources.Count} 个未被歌曲数据库声明的废案资源；它们不参与运行判断或歌曲删除。");
+            }
+            entry.Warnings = warnings.ToArray();
+        }
+
+        private static SongOrphanResource CreateOrphanResource(
+            string contentRoot,
+            SongResourceCandidate candidate)
+        {
+            var relativePath = Path.GetRelativePath(contentRoot, candidate.Path)
+                .Replace(Path.DirectorySeparatorChar, '/');
+            return new SongOrphanResource
+            {
+                PvId = candidate.PvId ?? 0,
+                Kind = candidate.Kind,
+                Path = candidate.Path,
+                RelativePath = relativePath,
+                DisplayName = $"{GetResourceKindDisplayName(candidate.Kind)} · {Path.GetFileName(candidate.Path)}"
+            };
+        }
+
+        private static string GetResourceKindDisplayName(SongResourceKind kind)
+        {
+            return kind switch
+            {
+                SongResourceKind.Chart => "谱面",
+                SongResourceKind.Audio => "音频",
+                SongResourceKind.Video => "视频",
+                SongResourceKind.Artwork => "歌曲图片",
+                SongResourceKind.AdditionalParameter => "附加参数",
+                _ => "资源"
+            };
+        }
+
+        private static HashSet<string> BuildDeclaredResourcePathSet(
+            string contentRoot,
+            IEnumerable<SongEntry> entries)
+        {
+            var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            AddSpriteDatabaseDeclaredArtworkPaths(paths, contentRoot);
+            foreach (var entry in entries.Where(entry => !entry.IsOrphanResourceEntry))
+            {
+                AddDeclaredResourcePath(paths, contentRoot, entry.AudioPath);
+                foreach (var path in entry.AlternateAudioPaths)
+                    AddDeclaredResourcePath(paths, contentRoot, path);
+                foreach (var path in entry.VideoPaths)
+                    AddDeclaredResourcePath(paths, contentRoot, path);
+                foreach (var path in entry.ArtworkPaths)
+                    AddDeclaredResourcePath(paths, contentRoot, path);
+                foreach (var path in entry.AdditionalParameterPaths)
+                    AddDeclaredResourcePath(paths, contentRoot, path);
+                foreach (var path in entry.ExplicitAssetPaths)
+                    AddDeclaredResourcePath(paths, contentRoot, path);
+                foreach (var difficulty in entry.Difficulties.Where(difficulty =>
+                    difficulty.Source != SongDifficultySource.DetectedChart))
+                {
+                    AddDeclaredResourcePath(paths, contentRoot, difficulty.ScriptPath);
                 }
             }
-            return "unknown";
+            return paths;
+        }
+
+        private static void AddSpriteDatabaseDeclaredArtworkPaths(
+            ISet<string> paths,
+            string contentRoot)
+        {
+            var romRoot = Path.Combine(contentRoot, "rom");
+            if (!Directory.Exists(romRoot))
+                return;
+
+            try
+            {
+                var options = new EnumerationOptions
+                {
+                    RecurseSubdirectories = true,
+                    IgnoreInaccessible = true,
+                    AttributesToSkip = FileAttributes.ReparsePoint
+                };
+                var twoDDirectory = Path.Combine(romRoot, "2d");
+                foreach (var databasePath in Directory.EnumerateFiles(
+                    romRoot,
+                    "mod_spr_db.bin",
+                    options))
+                {
+                    try
+                    {
+                        using var database = BinaryFile.Load<SpriteDatabase>(databasePath);
+                        foreach (var set in database.SpriteSets)
+                        {
+                            var setFileName = Path.GetFileName(set.FileName ?? String.Empty);
+                            if (String.IsNullOrWhiteSpace(setFileName))
+                                continue;
+                            AddDeclaredResourcePath(
+                                paths,
+                                contentRoot,
+                                Path.Combine(
+                                    twoDDirectory,
+                                    Path.GetFileNameWithoutExtension(setFileName) + ".farc"));
+                        }
+                    }
+                    catch (Exception exception) when (
+                        IsFileSystemException(exception) ||
+                        exception is InvalidDataException ||
+                        exception is ArgumentException)
+                    {
+                        // Artwork probing reports malformed Sprite DB files separately.
+                    }
+                }
+            }
+            catch (Exception exception) when (IsFileSystemException(exception))
+            {
+                // An unreadable optional Sprite DB does not stop song database parsing.
+            }
+        }
+
+        private static void AddDeclaredResourcePath(
+            ISet<string> paths,
+            string contentRoot,
+            string path)
+        {
+            if (String.IsNullOrWhiteSpace(path) ||
+                path.StartsWith("game://", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            try
+            {
+                var fullPath = Path.GetFullPath(path);
+                if (IsUnderRoot(contentRoot, fullPath))
+                    paths.Add(fullPath);
+            }
+            catch (Exception exception) when (
+                IsFileSystemException(exception) ||
+                exception is ArgumentException)
+            {
+                // Invalid database paths are already reported by the normal parser.
+            }
+        }
+
+        private static IReadOnlyList<SongResourceCandidate> EnumerateSongResourceCandidates(
+            string contentRoot,
+            CancellationToken cancellationToken,
+            out bool isComplete)
+        {
+            var candidates = new Dictionary<string, SongResourceCandidate>(StringComparer.OrdinalIgnoreCase);
+            isComplete = true;
+            isComplete &= AddResourceCandidates(
+                Path.Combine(contentRoot, "rom", "script"),
+                SongResourceKind.Chart,
+                new[] { ".dsc" },
+                null,
+                candidates,
+                cancellationToken);
+            isComplete &= AddResourceCandidates(
+                Path.Combine(contentRoot, "rom", "script_nc"),
+                SongResourceKind.Chart,
+                new[] { ".dsc" },
+                null,
+                candidates,
+                cancellationToken);
+            isComplete &= AddResourceCandidates(
+                Path.Combine(contentRoot, "rom", "sound", "song"),
+                SongResourceKind.Audio,
+                new[] { ".ogg" },
+                null,
+                candidates,
+                cancellationToken);
+            isComplete &= AddResourceCandidates(
+                Path.Combine(contentRoot, "rom", "movie"),
+                SongResourceKind.Video,
+                new[] { ".mp4", ".usm" },
+                null,
+                candidates,
+                cancellationToken);
+            isComplete &= AddResourceCandidates(
+                Path.Combine(contentRoot, "rom", "2d"),
+                SongResourceKind.Artwork,
+                new[] { ".farc" },
+                "spr_sel_pv",
+                candidates,
+                cancellationToken);
+            isComplete &= AddResourceCandidates(
+                Path.Combine(contentRoot, "rom", "add_param"),
+                SongResourceKind.AdditionalParameter,
+                new[] { ".adp" },
+                null,
+                candidates,
+                cancellationToken);
+            return candidates.Values.ToArray();
+        }
+
+        private static bool AddResourceCandidates(
+            string directory,
+            SongResourceKind kind,
+            IReadOnlyCollection<string> extensions,
+            string requiredFileNamePrefix,
+            IDictionary<string, SongResourceCandidate> candidates,
+            CancellationToken cancellationToken)
+        {
+            if (!Directory.Exists(directory))
+                return true;
+
+            try
+            {
+                var options = new EnumerationOptions
+                {
+                    RecurseSubdirectories = true,
+                    IgnoreInaccessible = true,
+                    AttributesToSkip = FileAttributes.ReparsePoint
+                };
+                foreach (var path in Directory.EnumerateFiles(directory, "*", options))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var fileNameWithoutExtension = Path.GetFileNameWithoutExtension(path);
+                    if (!extensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase) ||
+                        (!String.IsNullOrWhiteSpace(requiredFileNamePrefix) &&
+                            !fileNameWithoutExtension.StartsWith(
+                                requiredFileNamePrefix,
+                                StringComparison.OrdinalIgnoreCase)) ||
+                        (kind == SongResourceKind.Artwork &&
+                            fileNameWithoutExtension.StartsWith(
+                                "spr_sel_pvtmb",
+                                StringComparison.OrdinalIgnoreCase)))
+                    {
+                        continue;
+                    }
+
+                    var fullPath = Path.GetFullPath(path);
+                    candidates[fullPath] = new SongResourceCandidate
+                    {
+                        Kind = kind,
+                        Path = fullPath,
+                        PvId = TryInferResourcePvId(kind, fullPath, out var pvId)
+                            ? pvId
+                            : null
+                    };
+                }
+                return true;
+            }
+            catch (Exception exception) when (IsFileSystemException(exception))
+            {
+                return false;
+            }
+        }
+
+        private static bool TryInferResourcePvId(
+            SongResourceKind kind,
+            string path,
+            out int pvId)
+        {
+            pvId = 0;
+            var fileName = Path.GetFileNameWithoutExtension(path);
+            var pattern = kind == SongResourceKind.Artwork
+                ? ArtworkFilePvIdPattern
+                : ChartFilePvIdPattern;
+            var match = pattern.Match(fileName ?? String.Empty);
+            return match.Success && Int32.TryParse(
+                    match.Groups[1].Value,
+                    NumberStyles.None,
+                    CultureInfo.InvariantCulture,
+                    out pvId);
         }
 
         private static bool AddFlatDatabaseEntries(
@@ -892,7 +1257,9 @@ namespace DivaModManager
             CancellationToken cancellationToken)
         {
             var artworkService = new SongArtworkService(modsFolder);
-            var candidates = entries.Where(entry => !entry.IsSongPatch).ToArray();
+            var candidates = entries.Where(entry =>
+                !entry.IsSongPatch &&
+                !entry.IsOrphanResourceEntry).ToArray();
             var availabilityByEntry = artworkService.ProbeAvailability(candidates, cancellationToken);
             foreach (var entry in candidates)
             {
@@ -1572,7 +1939,9 @@ namespace DivaModManager
                 return;
 
             foreach (var entry in entries.Where(entry =>
-                entry.ModEnabled && entry.RequiresEdenProjectCore))
+                entry.ModEnabled &&
+                !entry.IsOrphanResourceEntry &&
+                entry.RequiresEdenProjectCore))
             {
                 AddBlockingRunStatusReason(
                     entry,
@@ -1952,6 +2321,9 @@ namespace DivaModManager
             };
             values.AddRange(entry.RawPvIds);
             values.AddRange(entry.Difficulties.Select(difficulty => difficulty.Charter));
+            values.AddRange(entry.OrphanResources.Select(resource => resource.DisplayName));
+            values.AddRange(entry.OrphanResources.Select(resource => resource.RelativePath));
+            values.AddRange(entry.OrphanResources.Select(resource => resource.Path));
             return String.Join(" ", values.Where(value => !String.IsNullOrWhiteSpace(value)));
         }
 
@@ -1959,10 +2331,16 @@ namespace DivaModManager
         {
             foreach (var group in entries.GroupBy(entry => entry.PvId))
             {
-                var nonAdditionalEntries = group
+                var runtimeEntries = group
+                    .Where(entry => !entry.IsOrphanResourceEntry)
+                    .ToArray();
+                if (runtimeEntries.Length == 0)
+                    continue;
+
+                var nonAdditionalEntries = runtimeEntries
                     .Where(entry => entry.Format != SongFormat.AdditionalDifficulty)
                     .ToArray();
-                ValidateMega39PlusOfficialChartMods(group);
+                ValidateMega39PlusOfficialChartMods(runtimeEntries);
                 var completeProviders = nonAdditionalEntries
                     .Where(entry => entry.ModEnabled && HasCompleteCoreAssets(entry))
                     .ToArray();
@@ -1981,9 +2359,9 @@ namespace DivaModManager
                     }
                 }
 
-                ValidateAdditionalDifficultyTargets(group, nonAdditionalEntries);
-                ValidateImplicitChartReferences(group, nonAdditionalEntries);
-                ValidateMega39PlusOfficialChartMods(group);
+                ValidateAdditionalDifficultyTargets(runtimeEntries, nonAdditionalEntries);
+                ValidateImplicitChartReferences(runtimeEntries, nonAdditionalEntries);
+                ValidateMega39PlusOfficialChartMods(runtimeEntries);
                 AttachPatchSources(group.Key, nonAdditionalEntries);
 
                 var fullSongDefinitions = nonAdditionalEntries
@@ -2837,6 +3215,13 @@ namespace DivaModManager
             public string Path { get; set; } = String.Empty;
             public bool Exists { get; set; }
             public bool FromGame { get; set; }
+        }
+
+        private sealed class SongResourceCandidate
+        {
+            public int? PvId { get; set; }
+            public SongResourceKind Kind { get; set; }
+            public string Path { get; set; } = String.Empty;
         }
 
         private sealed class VirtualAssetResolver

@@ -132,6 +132,8 @@ namespace DivaModManager
         {
             if (song == null)
                 return SongEditResult.Failed("没有选中歌曲。");
+            if (song.IsOrphanResourceEntry)
+                return SongEditResult.Failed("废案资源没有歌曲数据库条目，不能修改歌名。");
             if (song.IsSongPatch)
                 return SongEditResult.Failed(
                     "此条目是歌曲补丁，不能修改歌名。补丁会复用或扩展其他歌曲，请打开其模组目录进行管理。");
@@ -182,6 +184,9 @@ namespace DivaModManager
         {
             if (song == null)
                 return SongEditResult.Failed("没有选中歌曲。");
+            if (song.IsOrphanResourceEntry)
+                return SongEditResult.Failed(
+                    "废案资源不会随“删除歌曲”处理。请先核对资源路径，再在模组目录中手动管理。");
             if (song.IsSongPatch)
                 return SongEditResult.Failed(
                     "此条目是歌曲补丁，不能作为独立歌曲删除。请打开其模组目录管理补丁，以免破坏它与原曲的关系。");
@@ -297,6 +302,8 @@ namespace DivaModManager
         {
             if (song == null)
                 return SongEditResult.Failed("没有选中歌曲。");
+            if (song.IsOrphanResourceEntry)
+                return SongEditResult.Failed("废案资源为只读，不能作为歌曲封面替换目标。");
             if (String.IsNullOrWhiteSpace(preparedFarcPath) || !File.Exists(preparedFarcPath))
                 return SongEditResult.Failed("请选择已由 MEGA39+ 工具生成的 FARC 封面资源。");
             if (!Path.GetExtension(preparedFarcPath).Equals(".farc", StringComparison.OrdinalIgnoreCase))
@@ -346,6 +353,8 @@ namespace DivaModManager
         {
             if (song == null)
                 return SongEditResult.Failed("没有选中歌曲。");
+            if (song.IsOrphanResourceEntry)
+                return SongEditResult.Failed("废案资源为只读，不能作为歌曲图片替换目标。");
             if (String.IsNullOrWhiteSpace(archivePath) || !File.Exists(archivePath))
                 return SongEditResult.Failed("找不到要修改的 MEGA39+ 贴图 FARC。");
             if (replacementBytes == null || replacementBytes.Length == 0)

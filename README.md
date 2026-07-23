@@ -1,4 +1,4 @@
-# DivaModManager 1.4.0 社区版
+# DivaModManager 1.5.0 社区版
 
 DivaModManager 是《初音未来 Project DIVA MEGA39+ / Hatsune Miku: Project DIVA Mega Mix+》PC 版的模组管理器。本社区版在原项目的模组安装、排序、更新和启动功能之上，加入了本地模组类别识别，以及面向 Custom Songs 的歌曲、封面和运行状态管理。
 
@@ -18,7 +18,7 @@ DivaModManager 是《初音未来 Project DIVA MEGA39+ / Hatsune Miku: Project D
 
 ## 下载与安装
 
-1. 从当前仓库的 [Releases](../../releases) 下载 `DivaModManager-v1.4.0-win-x64.zip`。
+1. 从当前仓库的 [Releases](../../releases) 下载 `DivaModManager-v1.5.0-win-x64.zip`。
 2. 将 ZIP **完整解压**到一个可写目录。不要只从压缩包内运行 EXE。
 3. 保持 `x64`、`x86` 目录与 `DivaModManager.exe` 位于同一目录；它们包含程序解压 7z/RAR 所需的原生库。
 4. 安装 [Microsoft .NET 6 Desktop Runtime x64](https://dotnet.microsoft.com/download/dotnet/6.0/runtime)，然后运行 `DivaModManager.exe`。
@@ -43,13 +43,16 @@ DivaModManager 是《初音未来 Project DIVA MEGA39+ / Hatsune Miku: Project D
 
 - 解析 Legacy `mod_pv_db.txt`，以及 New Classics 使用的数据库和 `nc_db.toml`。
 - 将同一 PVID 的多个难度组织为一首歌曲，共用其音频、视频和三类歌曲图片。
-- 按 PVID、歌名、作者或模组搜索，并按 Easy、Normal、Hard、Extreme、Extra Extreme、星级和运行状态筛选。超出 1-10 或无法解析的星级显示为 `?`。
+- 按 PVID、歌名、作者、模组或资源文件名搜索，并按 Easy、Normal、Hard、Extreme、Extra Extreme、星级、运行状态和废案资源筛选。超出 1-10 或无法解析的星级显示为 `?`。
+- 以 `mod_pv_db.txt`、`mod_nc_pv_db.txt` 和 `nc_db.toml` 的精确声明为歌曲资源清单；未声明的谱面、音频、视频、歌曲图片 FARC 和附加参数会单独标为“废案资源”，可查看路径并在资源管理器中定位。
 - 编辑歌名、英文名和读音/排序名；写入时保留数据库编码、换行、注释和无关字段。
 - 预览并替换小图标（Thumbnail）、封面（Jacket）和背景（Background）。预览会校正 MEGA39+ 贴图中常见的上下翻转；替换支持 PNG、JPEG 和 BMP，并保留同一 FARC/图集中的其他 Sprite。
 - 导入完整的 ZIP、7z 或 RAR 歌曲包；删除歌曲时仅移除经完整反向引用确认属于该歌曲的资源。
 - 修改数据库、图片或删除歌曲前，在 `%LocalAppData%\DivaModManager\Backups\Songs` 创建备份。
 
-歌曲补丁、共享数据库和 Eden Project 的受保护记录会限制歌名编辑或整首删除，避免破坏其他歌曲。替换图片也必须先找到可验证的现有 Sprite/FARC；程序不会凭一张 PNG 猜测并生成新的 FARC。
+废案资源不参与歌曲难度、完整性、PVID 冲突或独占资源删除计算。完全没有歌曲数据库条目的自定义 PVID 会显示为只读废案条目；跨模组实际被已启用歌曲引用的媒体，以及 `mod_spr_db.bin` 声明的图片 FARC，不会被误标。仅有音频的 Cover 替换也不会被当成废案歌曲。
+
+歌曲补丁、废案条目、共享数据库和 Eden Project 的受保护记录会限制歌名编辑或整首删除，避免破坏其他歌曲。替换图片也必须先找到可验证的现有 Sprite/FARC；程序不会凭一张 PNG 猜测并生成新的 FARC。
 
 ## 运行状态判定
 
@@ -73,6 +76,8 @@ DivaModManager 是《初音未来 Project DIVA MEGA39+ / Hatsune Miku: Project D
 | 难度重复且任一星级未知/无效 | 无法运行 |
 
 无谱面的歌曲补丁可以与对应歌曲共用 PVID，管理器会提示补丁及其路径，而不会把它当作完整歌曲冲突。`nc_db.toml` 明确登记的 New Classics 官曲扩展也可以复用 MEGA39+ 官曲 PVID；Legacy 或未登记谱面仍会被判定为冲突。
+
+“废案资源”不是第四种运行状态。普通自定义歌曲中的未声明文件不改变可运行、勉强运行或无法运行的判断；但未登记且指向 MEGA39+ 官曲 PVID 的 DSC 会通过虚拟文件系统覆盖官曲，因此仍以红色提示实际覆盖风险。
 
 用户可以把最终状态人工改为“可运行”“勉强运行”或“无法运行”，也可以恢复“自动判断”。人工覆盖保存在 `%LocalAppData%\DivaModManager\song-run-status-overrides.json`，只改变显示和筛选，**不会补齐缺失资源、修复谱面或消除真实 PVID 冲突**；自动诊断会继续保留在详情中。
 
@@ -121,7 +126,7 @@ dotnet publish DivaModManager/DivaModManager.csproj -c Release `
 ## 发布与许可
 
 - 版本记录：[CHANGELOG.md](CHANGELOG.md)
-- 1.4.0 发布说明：[docs/RELEASE_NOTES_1.4.0.md](docs/RELEASE_NOTES_1.4.0.md)
+- 1.5.0 发布说明：[docs/RELEASE_NOTES_1.5.0.md](docs/RELEASE_NOTES_1.5.0.md)
 - 第三方组件：[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)
 - 项目许可证：[GNU GPL v3](LICENSE)
 

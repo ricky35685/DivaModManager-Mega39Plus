@@ -10,7 +10,17 @@ namespace DivaModManager
         Legacy,
         NewClassics,
         LegacyWithNewClassics,
-        AdditionalDifficulty
+        AdditionalDifficulty,
+        OrphanResources
+    }
+
+    public enum SongResourceKind
+    {
+        Chart,
+        Audio,
+        Video,
+        Artwork,
+        AdditionalParameter
     }
 
     public enum SongDifficultySource
@@ -101,6 +111,15 @@ namespace DivaModManager
         }
     }
 
+    public sealed class SongOrphanResource
+    {
+        public int PvId { get; internal set; }
+        public SongResourceKind Kind { get; internal set; }
+        public string Path { get; internal set; } = String.Empty;
+        public string RelativePath { get; internal set; } = String.Empty;
+        public string DisplayName { get; internal set; } = String.Empty;
+    }
+
     public sealed class SongEntry
     {
         private IReadOnlyList<SongDifficulty> difficulties = Array.Empty<SongDifficulty>();
@@ -120,6 +139,7 @@ namespace DivaModManager
         private IReadOnlyList<string> runStatusReasons = Array.Empty<string>();
         private IReadOnlyList<SongSourcePath> idConflictSources = Array.Empty<SongSourcePath>();
         private IReadOnlyList<SongSourcePath> patchSources = Array.Empty<SongSourcePath>();
+        private IReadOnlyList<SongOrphanResource> orphanResources = Array.Empty<SongOrphanResource>();
         private SongRunStatus automaticRunStatus = SongRunStatus.Ready;
         private SongRunStatus? manualRunStatusOverride;
 
@@ -174,6 +194,7 @@ namespace DivaModManager
                     SongFormat.NewClassics => "New Classics",
                     SongFormat.LegacyWithNewClassics => "Legacy + New Classics",
                     SongFormat.AdditionalDifficulty => "Additional Difficulty",
+                    SongFormat.OrphanResources => "废案资源",
                     _ => Format.ToString()
                 };
             }
@@ -270,6 +291,13 @@ namespace DivaModManager
         public string AssetStatus { get; internal set; } = String.Empty;
 
         public bool IsSongPatch { get; internal set; }
+        public bool IsOrphanResourceEntry { get; internal set; }
+        public IReadOnlyList<SongOrphanResource> OrphanResources
+        {
+            get => orphanResources;
+            internal set => orphanResources = value ?? Array.Empty<SongOrphanResource>();
+        }
+        public bool HasOrphanResources => OrphanResources.Count > 0;
         public bool IsEdenProjectCore { get; internal set; }
         internal bool HasValidEdenCoreSignature { get; set; }
         public bool RequiresEdenProjectCore { get; internal set; }

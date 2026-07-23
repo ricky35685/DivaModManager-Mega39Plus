@@ -1,4 +1,5 @@
 using MikuMikuLibrary.Archives;
+using MikuMikuLibrary.Databases;
 using MikuMikuLibrary.IO;
 using MikuMikuLibrary.Sprites;
 using MikuMikuLibrary.Textures;
@@ -1203,26 +1204,183 @@ public sealed class SongCatalogServiceTests
 
         Assert.Equal(8, song.PvId);
         Assert.True(song.IsMega39PlusOfficialPvId);
-        Assert.Equal(SongFormat.AdditionalDifficulty, song.Format);
+        Assert.True(song.IsOrphanResourceEntry);
+        Assert.Equal(SongFormat.OrphanResources, song.Format);
         Assert.Equal(SongRunStatus.Broken, song.RunStatus);
         Assert.Equal(chartPath, Assert.Single(song.LocalChartOverlayPaths));
-        var difficulty = Assert.Single(song.Difficulties);
-        Assert.True(difficulty.ScriptExists);
-        Assert.Equal(SongDifficultySource.DetectedChart, difficulty.Source);
-        Assert.False(difficulty.IsDeclaredByNewClassicsDatabase);
-        Assert.Equal("Additional Difficulty", song.FormatDisplayName);
-        Assert.Contains(chartPath, song.RunStatusReasonsDisplay, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("未找到对应的 PV 数据库元数据", song.WarningsDisplay, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(song.Difficulties);
+        var orphan = Assert.Single(song.OrphanResources);
+        Assert.Equal(SongResourceKind.Chart, orphan.Kind);
+        Assert.Equal(chartPath, orphan.Path);
+        Assert.Equal("废案资源", song.FormatDisplayName);
+        Assert.Contains("直接覆盖官曲", song.RunStatusReasonsDisplay, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("未被歌曲数据库声明", song.WarningsDisplay, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void DoesNotCreateSongEntryForOrphanChartOnCustomPvId()
+    public void KeepsUndeclaredResourcesOutOfDeclaredSongRuntimeState()
     {
         using var mods = new TemporaryMods();
-        var mod = mods.CreateMod("Orphan custom chart");
-        mod.Write("rom/script/pv_9999_extreme.dsc");
+        var mod = mods.CreateMod("Song with abandoned resources");
+        mod.Write("rom/mod_pv_db.txt", String.Join("\n", new[]
+        {
+            "pv_9999.song_name=Released song",
+            "pv_9999.song_file_name=rom/sound/song/pv_9999.ogg",
+            "pv_9999.movie_file_name=rom/movie/pv_9999.usm",
+            "pv_9999.difficulty.hard.0.level=PV_LV_07_0",
+            "pv_9999.difficulty.hard.0.script_file_name=rom/script/pv_9999_hard.dsc"
+        }));
+        mod.Write(
+            "rom/nc_db.toml",
+            NewClassicsSong(9999, "CONSOLE", "rom/script_nc/pv_9999_extreme.dsc"));
+        mod.Write("rom/sound/song/pv_9999.ogg");
+        mod.Write("rom/movie/pv_9999.usm");
+        mod.Write("rom/script/pv_9999_hard.dsc");
+        mod.Write("rom/script_nc/pv_9999_extreme.dsc");
+
+        var orphanPaths = new Dictionary<SongResourceKind, string>
+        {
+            [SongResourceKind.Chart] = mod.Write("rom/script/pv_9999_easy_unused.dsc"),
+            [SongResourceKind.Audio] = mod.Write("rom/sound/song/pv_9999_unused.ogg"),
+            [SongResourceKind.Video] = mod.Write("rom/movie/pv_9999_unused.mp4"),
+            [SongResourceKind.Artwork] = mod.Write("rom/2d/spr_sel_pv9999_unused.farc", "unused"),
+            [SongResourceKind.AdditionalParameter] = mod.Write("rom/add_param/pv_9999_unused.adp")
+        };
+
+        var song = Assert.Single(SongCatalogService.ScanModsWithoutArtwork(mods.Root));
+
+        Assert.False(song.IsOrphanResourceEntry);
+        Assert.True(song.HasOrphanResources);
+        Assert.Equal(SongFormat.LegacyWithNewClassics, song.Format);
+        Assert.Equal(SongRunStatus.Ready, song.RunStatus);
+        Assert.Equal(new[] { "hard", "extreme" },
+            song.Difficulties.Select(difficulty => difficulty.NormalizedName));
+        Assert.Equal(orphanPaths.Count, song.OrphanResources.Count);
+        Assert.All(orphanPaths, expected =>
+        {
+            var resource = Assert.Single(song.OrphanResources, resource => resource.Kind == expected.Key);
+            Assert.Equal(expected.Value, resource.Path);
+            Assert.Equal(9999, resource.PvId);
+            Assert.DoesNotContain(expected.Value, song.ReferencedAssetPaths);
+        });
+        Assert.DoesNotContain(song.Difficulties, difficulty =>
+            difficulty.ScriptPath.Equals(orphanPaths[SongResourceKind.Chart], StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain("unused", song.RunStatusReasonsDisplay, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TreatsArtworkArchiveReferencedBySpriteDatabaseAsDeclared()
+    {
+        using var mods = new TemporaryMods();
+        var mod = mods.CreateMod("Sprite DB artwork");
+        mod.Write("rom/mod_pv_db.txt", String.Join("\n", new[]
+        {
+            "pv_9998.song_name=Sprite DB song",
+            "pv_9998.song_file_name=rom/sound/song/pv_9998.ogg",
+            "pv_9998.difficulty.extreme.0.script_file_name=rom/script/pv_9998_extreme.dsc"
+        }));
+        mod.Write("rom/sound/song/pv_9998.ogg");
+        mod.Write("rom/script/pv_9998_extreme.dsc");
+        var artworkPath = mod.Write("rom/2d/spr_sel_pv9998_custom.farc", "custom artwork");
+
+        using (var database = new SpriteDatabase())
+        {
+            database.SpriteSets.Add(new SpriteSetInfo
+            {
+                Id = 1,
+                Name = "SPR_SEL_PV9998_CUSTOM",
+                FileName = "spr_sel_pv9998_custom.bin"
+            });
+            database.Save(Path.Combine(mod.Root, "rom", "2d", "mod_spr_db.bin"));
+        }
+
+        var song = Assert.Single(SongCatalogService.ScanModsWithoutArtwork(mods.Root));
+
+        Assert.False(song.HasOrphanResources);
+        Assert.DoesNotContain(
+            song.OrphanResources,
+            resource => resource.Path.Equals(artworkPath, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void DoesNotTreatStandaloneCoverReplacementAsOrphanSong()
+    {
+        using var mods = new TemporaryMods();
+        var mod = mods.CreateMod("Cover replacement");
+        mod.Write("rom/sound/song/pv_9997.ogg");
 
         Assert.Empty(SongCatalogService.ScanModsWithoutArtwork(mods.Root));
+    }
+
+    [Fact]
+    public void CreatesSearchableReadOnlyEntryForResourcesWithoutAnyDatabaseSong()
+    {
+        using var mods = new TemporaryMods();
+        var mod = mods.CreateMod("Abandoned custom song");
+        var chartPath = mod.Write("rom/script/pv_9876_extreme_unused.dsc");
+        var audioPath = mod.Write("rom/sound/song/pv_9876_unused.ogg");
+        var videoPath = mod.Write("rom/movie/pv_9876_unused.mp4");
+        var artworkPath = mod.Write("rom/2d/spr_sel_pv9876_unused.farc", "unused");
+        var parameterPath = mod.Write("rom/add_param/pv_9876_unused.adp");
+
+        var song = Assert.Single(SongCatalogService.ScanModsWithoutArtwork(mods.Root));
+
+        Assert.Equal(9876, song.PvId);
+        Assert.True(song.IsOrphanResourceEntry);
+        Assert.True(song.HasOrphanResources);
+        Assert.Equal(SongFormat.OrphanResources, song.Format);
+        Assert.Empty(song.DatabasePath);
+        Assert.Empty(song.NewClassicsDatabasePath);
+        Assert.Empty(song.Difficulties);
+        Assert.Empty(song.ReferencedAssetPaths);
+        Assert.False(song.HasIdConflict);
+        Assert.Equal(5, song.OrphanResources.Count);
+        Assert.Contains(song.OrphanResources, resource =>
+            resource.Kind == SongResourceKind.Chart && resource.Path == chartPath);
+        Assert.Contains(song.OrphanResources, resource =>
+            resource.Kind == SongResourceKind.Audio && resource.Path == audioPath);
+        Assert.Contains(song.OrphanResources, resource =>
+            resource.Kind == SongResourceKind.Video && resource.Path == videoPath);
+        Assert.Contains(song.OrphanResources, resource =>
+            resource.Kind == SongResourceKind.Artwork && resource.Path == artworkPath);
+        Assert.Contains(song.OrphanResources, resource =>
+            resource.Kind == SongResourceKind.AdditionalParameter && resource.Path == parameterPath);
+        Assert.All(song.OrphanResources, resource =>
+        {
+            Assert.Equal(9876, resource.PvId);
+            Assert.False(String.IsNullOrWhiteSpace(resource.RelativePath));
+            Assert.False(String.IsNullOrWhiteSpace(resource.DisplayName));
+            Assert.Contains(Path.GetFileName(resource.Path), song.SearchText, StringComparison.OrdinalIgnoreCase);
+        });
+    }
+
+    [Fact]
+    public void OrphanOnlyEntryDoesNotCreatePvIdConflictWithDeclaredSong()
+    {
+        using var mods = new TemporaryMods();
+        var released = mods.CreateMod("Released provider");
+        released.Write("rom/mod_pv_db.txt", String.Join("\n", new[]
+        {
+            "pv_9875.song_name=Released provider",
+            "pv_9875.song_file_name=rom/sound/song/pv_9875.ogg",
+            "pv_9875.difficulty.extreme.0.script_file_name=rom/script/pv_9875_extreme.dsc"
+        }));
+        released.Write("rom/sound/song/pv_9875.ogg");
+        released.Write("rom/script/pv_9875_extreme.dsc");
+        var abandoned = mods.CreateMod("Abandoned draft");
+        var abandonedChart = abandoned.Write("rom/script/pv_9875_hard_unused.dsc");
+
+        var songs = SongCatalogService.ScanModsWithoutArtwork(mods.Root);
+        var declaredSong = Assert.Single(songs, song => !song.IsOrphanResourceEntry);
+        var orphanEntry = Assert.Single(songs, song => song.IsOrphanResourceEntry);
+
+        Assert.False(declaredSong.HasIdConflict);
+        Assert.Empty(declaredSong.IdConflictSources);
+        Assert.False(declaredSong.HasSongPatches);
+        Assert.Equal(SongRunStatus.Ready, declaredSong.RunStatus);
+        Assert.False(orphanEntry.HasIdConflict);
+        Assert.Empty(orphanEntry.IdConflictSources);
+        Assert.Equal(abandonedChart, Assert.Single(orphanEntry.OrphanResources).Path);
     }
 
     [Theory]
@@ -1291,9 +1449,11 @@ public sealed class SongCatalogServiceTests
         songMod.Write("rom/script/pv_8901_hard.dsc");
         var sharedAudio = mediaProvider.Write("rom/sound/song/pv_8901.ogg");
         var sharedVideo = mediaProvider.Write("rom/movie/pv_8901.usm");
-        mediaProvider.Write("rom/script/pv_8901_extreme.dsc");
+        var unusedChart = mediaProvider.Write("rom/script/pv_8901_extreme.dsc");
 
-        var song = Assert.Single(SongCatalogService.ScanModsWithoutArtwork(mods.Root));
+        var songs = SongCatalogService.ScanModsWithoutArtwork(mods.Root);
+        var song = Assert.Single(songs, entry => !entry.IsOrphanResourceEntry);
+        var orphan = Assert.Single(songs, entry => entry.IsOrphanResourceEntry);
 
         Assert.True(song.AudioExists);
         Assert.Equal(sharedAudio, song.AudioPath);
@@ -1305,6 +1465,7 @@ public sealed class SongCatalogServiceTests
         Assert.StartsWith(songMod.Root, missingExtreme.ScriptPath, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(SongRunStatus.Warning, song.RunStatus);
         Assert.Contains(missingExtreme.ScriptPath, song.RunStatusReasonsDisplay, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(unusedChart, Assert.Single(orphan.OrphanResources).Path);
     }
 
     [Fact]
@@ -1324,9 +1485,11 @@ public sealed class SongCatalogServiceTests
             NewClassicsSong(8902, "CONSOLE", "rom/script_nc/pv_8902_extreme.dsc"));
         songMod.Write("rom/sound/song/pv_8902.ogg");
         songMod.Write("rom/script/pv_8902_hard.dsc");
-        sibling.Write("rom/script_nc/pv_8902_extreme.dsc");
+        var unusedChart = sibling.Write("rom/script_nc/pv_8902_extreme.dsc");
 
-        var song = Assert.Single(SongCatalogService.ScanModsWithoutArtwork(mods.Root));
+        var songs = SongCatalogService.ScanModsWithoutArtwork(mods.Root);
+        var song = Assert.Single(songs, entry => !entry.IsOrphanResourceEntry);
+        var orphan = Assert.Single(songs, entry => entry.IsOrphanResourceEntry);
         var newClassics = Assert.Single(
             song.Difficulties,
             difficulty => difficulty.Source == SongDifficultySource.NewClassicsDatabase);
@@ -1336,6 +1499,7 @@ public sealed class SongCatalogServiceTests
         Assert.StartsWith(songMod.Root, newClassics.ScriptPath, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(SongRunStatus.Warning, song.RunStatus);
         Assert.Contains(newClassics.ScriptPath, song.RunStatusReasonsDisplay, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(unusedChart, Assert.Single(orphan.OrphanResources).Path);
     }
 
     [Fact]
